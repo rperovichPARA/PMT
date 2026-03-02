@@ -5,7 +5,7 @@ import sys
 
 from PyQt5.QtWidgets import QApplication
 
-from taiyo_pmt.main_window import PortfolioManager
+from portfolio_tool.main_window import PortfolioManager
 
 
 def main() -> None:
