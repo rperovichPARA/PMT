@@ -1,4 +1,4 @@
-"""Data models and portfolio business logic for Taiyo PMT."""
+"""Data models and portfolio business logic for Paradaim Portfolio.Tool."""
 
 from __future__ import annotations
 

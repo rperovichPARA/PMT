@@ -1,4 +1,4 @@
-"""Main application window for Taiyo PMT Trading V2."""
+"""Main application window for Paradaim Portfolio.Tool Trading V2."""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ class PortfolioManager(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Taiyo PMT Trading V2")
+        self.setWindowTitle("Paradaim Portfolio.Tool Trading V2")
         self.resize(1400, 700)
 
         # Core state

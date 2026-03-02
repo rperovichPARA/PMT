@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Taiyo PMT Trading V2 - Standalone entry point."""
+"""Paradaim Portfolio.Tool Trading V2 - Standalone entry point."""
 
 import sys
 

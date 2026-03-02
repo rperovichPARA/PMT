@@ -1,4 +1,4 @@
-"""Cash-path chart generation for Taiyo PMT."""
+"""Cash-path chart generation for Paradaim Portfolio.Tool."""
 
 from __future__ import annotations
 
