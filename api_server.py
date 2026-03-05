@@ -55,6 +55,22 @@ def _jquants_get(path: str, params: dict | None = None) -> dict:
     return resp.json()
 
 
+def _fetch_usd_jpy_rate() -> float | None:
+    """Fetch current USD/JPY rate from a public API.  Returns None on failure."""
+    try:
+        resp = http_requests.get(
+            "https://api.exchangerate-api.com/v4/latest/USD",
+            timeout=10,
+        )
+        resp.raise_for_status()
+        rate = resp.json().get("rates", {}).get("JPY")
+        if rate and float(rate) > 1.0:
+            return float(rate)
+    except Exception as e:
+        print(f"  FX rate fetch failed: {e}")
+    return None
+
+
 app = FastAPI(title="Paradaim Portfolio.Tool API", version="2.0.0")
 
 app.add_middleware(
@@ -658,6 +674,12 @@ def refresh_prices():
     updated = 0
     adv_updated = 0
     errors = []
+
+    # Fetch current USD/JPY rate
+    live_rate = _fetch_usd_jpy_rate()
+    if live_rate:
+        _state["usd_jpy_rate"] = live_rate
+        print(f"  USD/JPY rate updated: {live_rate:.2f}")
 
     # Date range for 3-month ADV calculation
     today = datetime.now()
