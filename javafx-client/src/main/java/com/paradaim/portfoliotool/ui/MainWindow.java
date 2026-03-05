@@ -754,11 +754,9 @@ public class MainWindow {
             cashPathPanel.setVisible(true);
             cashPathPanel.setManaged(true);
 
-            // Add chart panel to the split pane if not already there
-            ScrollPane chartScroll = new ScrollPane(cashPathPanel);
-            chartScroll.setFitToWidth(true);
+            // Add chart panel directly to the split pane so it fills available space
             if (tradeChartSplit.getItems().size() < 2) {
-                tradeChartSplit.getItems().add(chartScroll);
+                tradeChartSplit.getItems().add(cashPathPanel);
             }
             tradeChartSplit.setDividerPositions(0.33);
             refreshCashPath();
@@ -786,7 +784,9 @@ public class MainWindow {
         }, responses -> {
             cashPathPanel.getChildren().clear();
             for (CashPathResponse resp : responses) {
-                cashPathPanel.getChildren().add(buildCashPathChart(resp));
+                VBox chartWrapper = buildCashPathChart(resp);
+                VBox.setVgrow(chartWrapper, Priority.ALWAYS);
+                cashPathPanel.getChildren().add(chartWrapper);
             }
             setStatus("Cash path loaded");
         });
@@ -810,7 +810,7 @@ public class MainWindow {
         LineChart<Number, Number> chart = new LineChart<>(xAxis, yAxis);
         chart.setTitle(String.format("%s — Cash: %.1fmm | Min: %.1fmm | End: %.1fmm",
                 resp.getFund(), resp.getCurrentCashMm(), resp.getMinCashMm(), resp.getEndingCashMm()));
-        chart.setPrefHeight(220);
+        chart.setMinHeight(120);
         chart.setCreateSymbols(false);
         chart.setAnimated(false);
         chart.setLegendVisible(true);
@@ -862,6 +862,7 @@ public class MainWindow {
 
         VBox wrapper = new VBox(4, chart, tradeInfo);
         wrapper.setPadding(new Insets(4, 0, 4, 0));
+        VBox.setVgrow(chart, Priority.ALWAYS);
         return wrapper;
     }
 
