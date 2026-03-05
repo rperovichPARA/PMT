@@ -813,7 +813,7 @@ public class MainWindow {
         chart.setMinHeight(120);
         chart.setCreateSymbols(false);
         chart.setAnimated(false);
-        chart.setLegendVisible(true);
+        chart.setLegendVisible(false);
 
         // Aggregate cash position line (cumulative, reflects all buys and sells)
         XYChart.Series<Number, Number> cashSeries = new XYChart.Series<>();
