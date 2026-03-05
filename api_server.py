@@ -677,8 +677,8 @@ def refresh_prices():
                 "from": date_from,
                 "to": date_to,
             })
-            # Response contains "daily_quotes" (v1) or "bars" (v2) key
-            bars = data.get("bars") or data.get("daily_quotes") or []
+            # V2 response uses "data" key
+            bars = data.get("data") or data.get("eq_bars_daily") or []
             if not bars:
                 print(f"  {symbol}: no bars returned from J-Quants")
                 errors.append(f"{symbol}: no data")
@@ -765,13 +765,14 @@ def debug_jquants(symbol: str):
         data = _jquants_get("/equities/bars/daily", {
             "code": code, "from": date_from, "to": date_to,
         })
-        bars = data.get("bars") or data.get("daily_quotes") or []
+        bars = data.get("data") or data.get("eq_bars_daily") or []
         return {
             "code": code,
             "raw_keys": list(data.keys()),
             "num_bars": len(bars),
             "sample_bar": bars[-1] if bars else None,
             "all_field_names": list(bars[0].keys()) if bars else [],
+            "raw_response": data if not bars else None,
         }
     except Exception as e:
         return {"code": code, "error": str(e)}
