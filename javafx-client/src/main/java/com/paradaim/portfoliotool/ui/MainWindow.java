@@ -175,6 +175,11 @@ public class MainWindow {
         portfolioTable = new TableView<>(portfolioData);
         portfolioTable.setPlaceholder(new Label("Import a portfolio to begin"));
         portfolioTable.getSelectionModel().setSelectionMode(SelectionMode.SINGLE);
+        portfolioTable.setOnMouseClicked(event -> {
+            if (event.getClickCount() == 2 && portfolioTable.getSelectionModel().getSelectedItem() != null) {
+                createTrade();
+            }
+        });
         VBox.setVgrow(portfolioTable, Priority.ALWAYS);
 
         buildPortfolioColumns();
@@ -486,6 +491,26 @@ public class MainWindow {
             @SuppressWarnings("unchecked")
             List<FilingData> filings = (List<FilingData>) data[3];
 
+            // Save current sort state by column index
+            List<Integer> sortColIndices = new ArrayList<>();
+            List<TableColumn.SortType> sortTypes = new ArrayList<>();
+            for (TableColumn<PositionRow, ?> col : portfolioTable.getSortOrder()) {
+                int idx = portfolioTable.getColumns().indexOf(col);
+                if (idx < 0) {
+                    // Check nested columns (fund group children)
+                    for (int g = 0; g < portfolioTable.getColumns().size(); g++) {
+                        TableColumn<PositionRow, ?> parent = portfolioTable.getColumns().get(g);
+                        int sub = parent.getColumns().indexOf(col);
+                        if (sub >= 0) {
+                            idx = g * 100 + sub;  // encode as parent*100 + child
+                            break;
+                        }
+                    }
+                }
+                sortColIndices.add(idx);
+                sortTypes.add(col.getSortType());
+            }
+
             positions = pos;
             fundNames = summary.getFundNames() != null ? summary.getFundNames() : new ArrayList<>();
 
@@ -494,6 +519,34 @@ public class MainWindow {
             updateTradesTable(trades);
             updateFilingsTable(filings);
             updateSummary(summary);
+
+            // Restore sort order
+            if (!sortColIndices.isEmpty()) {
+                List<TableColumn<PositionRow, ?>> newSortOrder = new ArrayList<>();
+                for (int i = 0; i < sortColIndices.size(); i++) {
+                    int idx = sortColIndices.get(i);
+                    TableColumn<PositionRow, ?> col = null;
+                    if (idx >= 100) {
+                        int parentIdx = idx / 100;
+                        int childIdx = idx % 100;
+                        if (parentIdx < portfolioTable.getColumns().size()) {
+                            var parent = portfolioTable.getColumns().get(parentIdx);
+                            if (childIdx < parent.getColumns().size()) {
+                                col = parent.getColumns().get(childIdx);
+                            }
+                        }
+                    } else if (idx >= 0 && idx < portfolioTable.getColumns().size()) {
+                        col = portfolioTable.getColumns().get(idx);
+                    }
+                    if (col != null) {
+                        col.setSortType(sortTypes.get(i));
+                        newSortOrder.add(col);
+                    }
+                }
+                portfolioTable.getSortOrder().setAll(newSortOrder);
+                portfolioTable.sort();
+            }
+
             setStatus("Data refreshed");
             refreshCashPath();
         });

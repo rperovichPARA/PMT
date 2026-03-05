@@ -22,6 +22,18 @@
     -fx-background-color: #f9f9f9;
 }
 
+.table-view .table-row-cell:selected {
+    -fx-background-color: #cce5ff;
+}
+
+.table-view .table-row-cell:selected:odd {
+    -fx-background-color: #cce5ff;
+}
+
+.table-view .table-row-cell:selected .text {
+    -fx-fill: black;
+}
+
 /* Buy/Sell colors */
 .buy-cell {
     -fx-text-fill: #008800;
