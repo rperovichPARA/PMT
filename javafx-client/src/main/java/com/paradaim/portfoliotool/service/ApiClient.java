@@ -179,6 +179,12 @@ public class ApiClient {
         }
     }
 
+    // -- Cash Path ------------------------------------------------------------
+
+    public CashPathResponse getCashPath(String fund) throws IOException {
+        return get("/api/cash-path/" + fund, CashPathResponse.class);
+    }
+
     // -- Filings --------------------------------------------------------------
 
     public String importFilings(File file) throws IOException {
