@@ -51,7 +51,7 @@ public class TargetPriceDialog extends Dialog<Double> {
         });
     }
 
-    public Double getResult() {
+    public Double getTargetPrice() {
         return result;
     }
 }

@@ -610,8 +610,8 @@ public class MainWindow {
         TargetPriceDialog dialog = new TargetPriceDialog(stage, selected.getSymbol(),
                 currentPrice, selected.getTargetPrice());
         dialog.showAndWait();
-        if (dialog.getResult() != null) {
-            runAsync(() -> api.updateTargetPrice(selected.getKey(), dialog.getResult()), msg -> {
+        if (dialog.getTargetPrice() != null) {
+            runAsync(() -> api.updateTargetPrice(selected.getKey(), dialog.getTargetPrice()), msg -> {
                 setStatus(msg);
                 refreshAll();
             });
