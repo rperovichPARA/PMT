@@ -703,10 +703,12 @@ class PortfolioManager(QMainWindow):
     def _refresh_prices(self) -> None:
         if not self.portfolio:
             return
-        progress = self._make_progress("Refreshing prices...", len(self.portfolio))
+        progress = self._make_progress("Refreshing prices...", 100)
         self._price_worker = PriceRefreshWorker(self.portfolio)
         self._price_worker.price_updated.connect(self._on_price_updated)
-        self._price_worker.progress_updated.connect(progress.setValue)
+        self._price_worker.progress_updated.connect(
+            lambda v, s: self._update_progress(progress, v, s)
+        )
         self._price_worker.completed.connect(progress.close)
         self._price_worker.error.connect(
             lambda msg: self._on_import_error(progress, msg)
@@ -1726,6 +1728,7 @@ class PortfolioManager(QMainWindow):
     def _make_progress(self, text: str, maximum: int) -> QProgressDialog:
         p = QProgressDialog(text, "Cancel", 0, maximum, self)
         p.setWindowModality(Qt.WindowModal)
+        p.setMinimumWidth(400)
         p.setValue(0)
         p.show()
         return p
