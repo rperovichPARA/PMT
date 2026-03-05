@@ -647,24 +647,55 @@ def refresh_prices():
     except Exception:
         pass
 
+    rate = _state["usd_jpy_rate"] or DEFAULT_EXCHANGE_RATE
+    adv_updated = 0
+
     for symbol, position in portfolio.items():
         if position.is_cash:
             continue
         try:
             ticker = yf.Ticker(f"{symbol}.T")
-            info = ticker.info
+
+            # Update price from info
+            try:
+                info = ticker.info or {}
+            except Exception:
+                info = {}
             price = info.get("regularMarketPrice")
             if price is not None:
                 position.price = float(price)
                 updated += 1
-            # Fetch average volume and compute 10% ADV in USD
-            avg_vol = info.get("averageDailyVolume3Month") or info.get("averageVolume")
-            if avg_vol and avg_vol > 0 and position.price > 0:
-                rate = _state["usd_jpy_rate"] or DEFAULT_EXCHANGE_RATE
+
+            # Fetch average volume — try multiple sources
+            avg_vol = 0.0
+            for vol_key in ("averageDailyVolume3Month", "averageVolume",
+                            "averageDailyVolume10Day", "volume"):
+                val = info.get(vol_key)
+                if val and val > 0:
+                    avg_vol = float(val)
+                    print(f"  {symbol}: got volume from info[{vol_key}]={avg_vol:.0f}")
+                    break
+
+            # Fallback: compute from price history
+            if not avg_vol:
+                try:
+                    hist = ticker.history(period="3mo")
+                    if hist is not None and not hist.empty and "Volume" in hist.columns:
+                        avg_vol = float(hist["Volume"].mean())
+                        print(f"  {symbol}: got volume from 3mo history={avg_vol:.0f}")
+                except Exception as hist_err:
+                    print(f"  {symbol}: history() failed: {hist_err}")
+
+            if avg_vol > 0 and position.price > 0:
                 adv_value_usd = (avg_vol * 0.10 * position.price) / rate
                 position.adv_10pct = adv_value_usd
-        except Exception:
-            pass
+                adv_updated += 1
+                print(f"  {symbol}: 10%ADV = {adv_value_usd:,.0f} USD "
+                      f"(vol={avg_vol:,.0f} x price={position.price:,.0f} / rate={rate:.2f})")
+            else:
+                print(f"  {symbol}: WARNING no volume data found (info keys: {list(info.keys())[:10]})")
+        except Exception as e:
+            print(f"  {symbol}: ERROR {e}")
 
     # Recompute trading_days for existing proposed executions with updated ADV
     for key, ex in _state["proposed_executions"].items():
@@ -674,7 +705,33 @@ def refresh_prices():
                 ex.trading_days = abs(ex.trade_value_usd) / adv
 
     _recompute_weights()
-    return {"message": f"Updated {updated} prices", "usd_jpy_rate": _state["usd_jpy_rate"]}
+    print(f"Price refresh complete: {updated} prices, {adv_updated} ADV values updated")
+    return {"message": f"Updated {updated} prices, {adv_updated} ADV values", "usd_jpy_rate": _state["usd_jpy_rate"]}
+
+
+@app.get("/api/debug/adv")
+def debug_adv():
+    """Diagnostic endpoint to check ADV values for all positions."""
+    portfolio = _state["portfolio"]
+    result = []
+    for symbol, pos in portfolio.items():
+        if pos.is_cash:
+            continue
+        result.append({
+            "symbol": symbol,
+            "price": pos.price,
+            "adv_10pct": pos.adv_10pct,
+            "has_adv": pos.adv_10pct > 0,
+        })
+    executions = []
+    for key, ex in _state["proposed_executions"].items():
+        executions.append({
+            "key": key,
+            "trade_value_usd": ex.trade_value_usd,
+            "trading_days": ex.trading_days,
+            "adv_10pct": portfolio[ex.symbol].adv_10pct if ex.symbol in portfolio else 0,
+        })
+    return {"positions": result, "executions": executions}
 
 
 @app.get("/api/exchange-rate")
