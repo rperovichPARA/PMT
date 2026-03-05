@@ -548,10 +548,18 @@ def cash_path(fund: str):
                 else:
                     initial_cash_usd += pos.price * fp.quantity / rate
 
-    max_days = max(
-        (int(math.ceil(ex.trading_days)) for ex in executions.values() if ex.fund == fund),
-        default=5,
-    )
+    # Compute max_days using dynamically calculated trading days
+    computed_days = []
+    for ex in executions.values():
+        if ex.fund != fund:
+            continue
+        if ex.symbol in portfolio and portfolio[ex.symbol].adv_10pct > 0:
+            td = abs(ex.trade_value_usd) / portfolio[ex.symbol].adv_10pct
+        else:
+            td = ex.trading_days
+        if td:
+            computed_days.append(int(math.ceil(td)))
+    max_days = max(computed_days, default=5)
     max_days = max(max_days + 1, 5)
 
     daily_cash_flow = [0.0] * max_days
@@ -561,18 +569,24 @@ def cash_path(fund: str):
     for item in fund_executions:
         symbol = item["symbol"]
         ex: ProposedExecution = item["execution"]
-        if not ex.trading_days or symbol not in portfolio:
+        if symbol not in portfolio:
             continue
 
         pos = portfolio[symbol]
         adv = pos.adv_10pct
-        if adv <= 0:
+
+        # Dynamically compute trading days from current ADV
+        if adv > 0:
+            trading_days = abs(ex.trade_value_usd) / adv
+        else:
+            trading_days = ex.trading_days
+        if not trading_days:
             continue
 
         is_buy = ex.trade_type == "Buy"
-        full_days = math.floor(ex.trading_days)
-        last_frac = ex.trading_days - full_days
-        daily_amount = adv / 1_000_000
+        full_days = math.floor(trading_days)
+        last_frac = trading_days - full_days
+        daily_amount = adv / 1_000_000 if adv > 0 else (abs(ex.trade_value_usd) / trading_days / 1_000_000)
 
         days = []
         values = []
@@ -643,8 +657,21 @@ def refresh_prices():
             if price is not None:
                 position.price = float(price)
                 updated += 1
+            # Fetch average volume and compute 10% ADV in USD
+            avg_vol = info.get("averageDailyVolume3Month") or info.get("averageVolume")
+            if avg_vol and avg_vol > 0 and position.price > 0:
+                rate = _state["usd_jpy_rate"] or DEFAULT_EXCHANGE_RATE
+                adv_value_usd = (avg_vol * 0.10 * position.price) / rate
+                position.adv_10pct = adv_value_usd
         except Exception:
             pass
+
+    # Recompute trading_days for existing proposed executions with updated ADV
+    for key, ex in _state["proposed_executions"].items():
+        if ex.symbol in portfolio:
+            adv = portfolio[ex.symbol].adv_10pct
+            if adv > 0:
+                ex.trading_days = abs(ex.trade_value_usd) / adv
 
     _recompute_weights()
     return {"message": f"Updated {updated} prices", "usd_jpy_rate": _state["usd_jpy_rate"]}
