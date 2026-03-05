@@ -94,7 +94,7 @@ public class MainWindow {
         fileMenu.getItems().addAll(importPortfolio, importFilings, new SeparatorMenuItem(), exportTrades, new SeparatorMenuItem(), exit);
 
         Menu actionsMenu = new Menu("Actions");
-        MenuItem refreshPrices = new MenuItem("Refresh Prices (YFinance)");
+        MenuItem refreshPrices = new MenuItem("Refresh Prices (J-Quants)");
         refreshPrices.setOnAction(e -> refreshPrices());
         MenuItem addPosition = new MenuItem("Add Position...");
         addPosition.setOnAction(e -> addPosition());
@@ -586,7 +586,7 @@ public class MainWindow {
     }
 
     private void refreshPrices() {
-        setStatus("Refreshing prices from YFinance...");
+        setStatus("Refreshing prices from J-Quants...");
         runAsync(() -> api.refreshPrices(), msg -> {
             setStatus(msg);
             refreshAll();
