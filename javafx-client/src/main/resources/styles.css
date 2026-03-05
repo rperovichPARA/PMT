@@ -110,3 +110,18 @@
 .disconnected {
     -fx-text-fill: #cc0000;
 }
+
+/* Cash path chart styling */
+.chart-series-line {
+    -fx-stroke-width: 1px;
+}
+
+.default-color0.chart-series-line {
+    -fx-stroke: #1a53ff;
+    -fx-stroke-width: 2.5px;
+}
+
+.chart-line-symbol {
+    -fx-background-radius: 0;
+    -fx-padding: 0;
+}
