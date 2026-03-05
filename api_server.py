@@ -9,8 +9,10 @@ import math
 import os
 import tempfile
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
+
+import requests as http_requests
 
 import pandas as pd
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -29,6 +31,29 @@ from portfolio_tool.models import (
     filing_thresholds,
     normalize_symbol,
 )
+
+# ---------------------------------------------------------------------------
+# J-Quants V2 API configuration
+# ---------------------------------------------------------------------------
+JQUANTS_API_KEY = "IsSPKDgnOojzoMEjBGhivJuw7_c9FBPlPDzt4iuYPdc"
+JQUANTS_BASE_URL = "https://api.jquants.com/v2"
+
+
+def _jquants_headers() -> dict[str, str]:
+    return {"x-api-key": JQUANTS_API_KEY}
+
+
+def _jquants_get(path: str, params: dict | None = None) -> dict:
+    """Make an authenticated GET request to J-Quants V2 API."""
+    resp = http_requests.get(
+        f"{JQUANTS_BASE_URL}{path}",
+        headers=_jquants_headers(),
+        params=params or {},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
 
 app = FastAPI(title="Paradaim Portfolio.Tool API", version="2.0.0")
 
@@ -548,10 +573,18 @@ def cash_path(fund: str):
                 else:
                     initial_cash_usd += pos.price * fp.quantity / rate
 
-    max_days = max(
-        (int(math.ceil(ex.trading_days)) for ex in executions.values() if ex.fund == fund),
-        default=5,
-    )
+    # Compute max_days using dynamically calculated trading days
+    computed_days = []
+    for ex in executions.values():
+        if ex.fund != fund:
+            continue
+        if ex.symbol in portfolio and portfolio[ex.symbol].adv_10pct > 0:
+            td = abs(ex.trade_value_usd) / portfolio[ex.symbol].adv_10pct
+        else:
+            td = ex.trading_days
+        if td:
+            computed_days.append(int(math.ceil(td)))
+    max_days = max(computed_days, default=5)
     max_days = max(max_days + 1, 5)
 
     daily_cash_flow = [0.0] * max_days
@@ -561,18 +594,24 @@ def cash_path(fund: str):
     for item in fund_executions:
         symbol = item["symbol"]
         ex: ProposedExecution = item["execution"]
-        if not ex.trading_days or symbol not in portfolio:
+        if symbol not in portfolio:
             continue
 
         pos = portfolio[symbol]
         adv = pos.adv_10pct
-        if adv <= 0:
+
+        # Dynamically compute trading days from current ADV
+        if adv > 0:
+            trading_days = abs(ex.trade_value_usd) / adv
+        else:
+            trading_days = ex.trading_days
+        if not trading_days:
             continue
 
         is_buy = ex.trade_type == "Buy"
-        full_days = math.floor(ex.trading_days)
-        last_frac = ex.trading_days - full_days
-        daily_amount = adv / 1_000_000
+        full_days = math.floor(trading_days)
+        last_frac = trading_days - full_days
+        daily_amount = adv / 1_000_000 if adv > 0 else (abs(ex.trade_value_usd) / trading_days / 1_000_000)
 
         days = []
         values = []
@@ -614,40 +653,128 @@ def cash_path(fund: str):
 
 @app.post("/api/prices/refresh")
 def refresh_prices():
-    """Refresh prices using yfinance."""
-    try:
-        import yfinance as yf
-    except ImportError:
-        raise HTTPException(500, "yfinance not installed")
-
+    """Refresh prices and ADV data using J-Quants V2 API."""
     portfolio = _state["portfolio"]
     updated = 0
+    adv_updated = 0
+    errors = []
 
-    # Exchange rate
-    try:
-        ticker = yf.Ticker("USDJPY=X")
-        info = ticker.info
-        price = info.get("regularMarketPrice")
-        if price is not None:
-            _state["usd_jpy_rate"] = float(price)
-    except Exception:
-        pass
+    # Date range for 3-month ADV calculation
+    today = datetime.now()
+    date_to = today.strftime("%Y%m%d")
+    date_from = (today - timedelta(days=90)).strftime("%Y%m%d")
 
-    for symbol, position in portfolio.items():
-        if position.is_cash:
-            continue
+    # Collect non-cash symbols
+    symbols = [s for s, p in portfolio.items() if not p.is_cash]
+
+    for symbol in symbols:
+        position = portfolio[symbol]
+        # J-Quants uses 5-digit codes (4-digit ticker + trailing 0)
+        code = f"{symbol}0"
         try:
-            ticker = yf.Ticker(f"{symbol}.T")
-            info = ticker.info
-            price = info.get("regularMarketPrice")
+            data = _jquants_get("/equities/bars/daily", {
+                "code": code,
+                "from": date_from,
+                "to": date_to,
+            })
+            # Response contains "daily_quotes" (v1) or "bars" (v2) key
+            bars = data.get("bars") or data.get("daily_quotes") or []
+            if not bars:
+                print(f"  {symbol}: no bars returned from J-Quants")
+                errors.append(f"{symbol}: no data")
+                continue
+
+            # Latest bar for current price
+            latest = bars[-1]
+            # V2 may use abbreviated field names (C, Vo) or full names (Close, Volume)
+            price = latest.get("Close") or latest.get("AdjClose") or latest.get("C") or latest.get("AdjC")
             if price is not None:
                 position.price = float(price)
                 updated += 1
-        except Exception:
-            pass
+                print(f"  {symbol}: price={position.price:,.0f}")
+
+            # Compute 3-month average daily volume for ADV
+            volumes = []
+            for bar in bars:
+                vol = bar.get("Volume") or bar.get("AdjVo") or bar.get("Vo") or 0
+                if vol and float(vol) > 0:
+                    volumes.append(float(vol))
+
+            if volumes and position.price > 0:
+                avg_vol = sum(volumes) / len(volumes)
+                rate = _state["usd_jpy_rate"] or DEFAULT_EXCHANGE_RATE
+                adv_value_usd = (avg_vol * 0.10 * position.price) / rate
+                position.adv_10pct = adv_value_usd
+                adv_updated += 1
+                print(f"  {symbol}: 10%ADV = {adv_value_usd:,.0f} USD "
+                      f"(avg_vol={avg_vol:,.0f} x price={position.price:,.0f} / rate={rate:.2f})")
+            else:
+                print(f"  {symbol}: WARNING no volume data in {len(bars)} bars")
+        except Exception as e:
+            print(f"  {symbol}: ERROR {e}")
+            errors.append(f"{symbol}: {e}")
+
+    # Recompute trading_days for existing proposed executions with updated ADV
+    for key, ex in _state["proposed_executions"].items():
+        if ex.symbol in portfolio:
+            adv = portfolio[ex.symbol].adv_10pct
+            if adv > 0:
+                ex.trading_days = abs(ex.trade_value_usd) / adv
 
     _recompute_weights()
-    return {"message": f"Updated {updated} prices", "usd_jpy_rate": _state["usd_jpy_rate"]}
+    msg = f"Updated {updated} prices, {adv_updated} ADV values (J-Quants V2)"
+    if errors:
+        msg += f" | {len(errors)} errors"
+    print(f"Price refresh complete: {msg}")
+    return {"message": msg, "usd_jpy_rate": _state["usd_jpy_rate"], "errors": errors}
+
+
+@app.get("/api/debug/adv")
+def debug_adv():
+    """Diagnostic endpoint to check ADV values for all positions."""
+    portfolio = _state["portfolio"]
+    result = []
+    for symbol, pos in portfolio.items():
+        if pos.is_cash:
+            continue
+        result.append({
+            "symbol": symbol,
+            "price": pos.price,
+            "adv_10pct": pos.adv_10pct,
+            "has_adv": pos.adv_10pct > 0,
+        })
+    executions = []
+    for key, ex in _state["proposed_executions"].items():
+        executions.append({
+            "key": key,
+            "trade_value_usd": ex.trade_value_usd,
+            "trading_days": ex.trading_days,
+            "adv_10pct": portfolio[ex.symbol].adv_10pct if ex.symbol in portfolio else 0,
+        })
+    return {"positions": result, "executions": executions}
+
+
+@app.get("/api/debug/jquants/{symbol}")
+def debug_jquants(symbol: str):
+    """Test J-Quants V2 API response for a single stock."""
+    code = f"{symbol}0"
+    today = datetime.now()
+    date_to = today.strftime("%Y%m%d")
+    date_from = (today - timedelta(days=7)).strftime("%Y%m%d")
+    try:
+        data = _jquants_get("/equities/bars/daily", {
+            "code": code, "from": date_from, "to": date_to,
+        })
+        bars = data.get("bars") or data.get("daily_quotes") or []
+        return {
+            "code": code,
+            "raw_keys": list(data.keys()),
+            "num_bars": len(bars),
+            "sample_bar": bars[-1] if bars else None,
+            "all_field_names": list(bars[0].keys()) if bars else [],
+        }
+    except Exception as e:
+        return {"code": code, "error": str(e)}
 
 
 @app.get("/api/exchange-rate")

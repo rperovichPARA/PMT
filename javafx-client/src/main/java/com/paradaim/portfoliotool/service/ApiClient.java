@@ -10,6 +10,7 @@ import java.io.File;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * HTTP client for communicating with the Paradaim Portfolio.Tool REST API.
@@ -27,7 +28,11 @@ public class ApiClient {
 
     public ApiClient(String baseUrl) {
         this.baseUrl = baseUrl;
-        this.http = new OkHttpClient();
+        this.http = new OkHttpClient.Builder()
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(120, TimeUnit.SECONDS)
+                .writeTimeout(30, TimeUnit.SECONDS)
+                .build();
         this.mapper = new ObjectMapper();
     }
 

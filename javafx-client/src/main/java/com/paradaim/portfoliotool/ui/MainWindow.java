@@ -94,7 +94,7 @@ public class MainWindow {
         fileMenu.getItems().addAll(importPortfolio, importFilings, new SeparatorMenuItem(), exportTrades, new SeparatorMenuItem(), exit);
 
         Menu actionsMenu = new Menu("Actions");
-        MenuItem refreshPrices = new MenuItem("Refresh Prices (YFinance)");
+        MenuItem refreshPrices = new MenuItem("Refresh Prices (J-Quants)");
         refreshPrices.setOnAction(e -> refreshPrices());
         MenuItem addPosition = new MenuItem("Add Position...");
         addPosition.setOnAction(e -> addPosition());
@@ -586,7 +586,7 @@ public class MainWindow {
     }
 
     private void refreshPrices() {
-        setStatus("Refreshing prices from YFinance...");
+        setStatus("Refreshing prices from J-Quants...");
         runAsync(() -> api.refreshPrices(), msg -> {
             setStatus(msg);
             refreshAll();
@@ -610,8 +610,8 @@ public class MainWindow {
         TargetPriceDialog dialog = new TargetPriceDialog(stage, selected.getSymbol(),
                 currentPrice, selected.getTargetPrice());
         dialog.showAndWait();
-        if (dialog.getResult() != null) {
-            runAsync(() -> api.updateTargetPrice(selected.getKey(), dialog.getResult()), msg -> {
+        if (dialog.getTargetPrice() != null) {
+            runAsync(() -> api.updateTargetPrice(selected.getKey(), dialog.getTargetPrice()), msg -> {
                 setStatus(msg);
                 refreshAll();
             });
@@ -690,43 +690,67 @@ public class MainWindow {
 
     @SuppressWarnings("unchecked")
     private VBox buildCashPathChart(CashPathResponse resp) {
+        int maxDay = resp.getCashPath().stream().mapToInt(CashPathPoint::getDay).max().orElse(5);
+
+        // --- Primary chart: aggregate cash position line ---
         NumberAxis xAxis = new NumberAxis();
         xAxis.setLabel("Trading Day");
         xAxis.setAutoRanging(false);
-        int maxDay = resp.getCashPath().stream().mapToInt(CashPathPoint::getDay).max().orElse(5);
         xAxis.setLowerBound(0);
         xAxis.setUpperBound(maxDay);
         xAxis.setTickUnit(1);
 
         NumberAxis yAxis = new NumberAxis();
-        yAxis.setLabel("Cash (mm USD)");
+        yAxis.setLabel("Cash Position (mm USD)");
 
         LineChart<Number, Number> chart = new LineChart<>(xAxis, yAxis);
         chart.setTitle(String.format("%s — Cash: %.1fmm | Min: %.1fmm | End: %.1fmm",
                 resp.getFund(), resp.getCurrentCashMm(), resp.getMinCashMm(), resp.getEndingCashMm()));
-        chart.setPrefHeight(250);
+        chart.setPrefHeight(220);
         chart.setCreateSymbols(true);
         chart.setAnimated(false);
+        chart.setLegendVisible(true);
 
-        // Cash position line
+        // Aggregate cash position line (cumulative, reflects all buys and sells)
         XYChart.Series<Number, Number> cashSeries = new XYChart.Series<>();
-        cashSeries.setName("Cash Position");
+        cashSeries.setName("Cash Position (mm USD)");
         for (CashPathPoint pt : resp.getCashPath()) {
             cashSeries.getData().add(new XYChart.Data<>(pt.getDay(), pt.getCashMm()));
         }
         chart.getData().add(cashSeries);
 
-        // Trade contribution series
+        // Per-security cumulative contribution lines
+        // These show how each trade adds to/subtracts from cash over its trading days
         for (CashPathSeries s : resp.getSeries()) {
             XYChart.Series<Number, Number> tradeSeries = new XYChart.Series<>();
-            tradeSeries.setName(s.getSymbol() + " (" + s.getTradeType() + ")");
+            String direction = "Sell".equals(s.getTradeType()) ? "+" : "-";
+            tradeSeries.setName(s.getSymbol() + " (" + s.getTradeType() + " " + direction + ")");
+
+            // Convert daily flows to cumulative contribution
+            double cumulative = 0.0;
+            tradeSeries.getData().add(new XYChart.Data<>(0, 0.0));
             for (int i = 0; i < s.getDays().size(); i++) {
-                tradeSeries.getData().add(new XYChart.Data<>(s.getDays().get(i), s.getValues().get(i)));
+                cumulative += s.getValues().get(i);
+                tradeSeries.getData().add(new XYChart.Data<>(s.getDays().get(i), cumulative));
             }
             chart.getData().add(tradeSeries);
         }
 
-        VBox wrapper = new VBox(chart);
+        // --- Trade breakdown summary below the chart ---
+        VBox tradeInfo = new VBox(2);
+        tradeInfo.setPadding(new Insets(2, 8, 4, 8));
+        for (CashPathSeries s : resp.getSeries()) {
+            double totalImpact = s.getValues().stream().mapToDouble(Double::doubleValue).sum();
+            int numDays = s.getDays().stream().mapToInt(Integer::intValue).max().orElse(0);
+            String arrow = totalImpact >= 0 ? "\u2191" : "\u2193";  // up/down arrow
+            String color = totalImpact >= 0 ? "#008800" : "#cc0000";
+            Label lbl = new Label(String.format("  %s %s: %.2fmm over %d days (%s)",
+                    arrow, s.getSymbol(), totalImpact, numDays, s.getTradeType()));
+            lbl.setStyle(String.format("-fx-font-size: 11px; -fx-text-fill: %s;", color));
+            tradeInfo.getChildren().add(lbl);
+        }
+
+        VBox wrapper = new VBox(4, chart, tradeInfo);
         wrapper.setPadding(new Insets(4, 0, 4, 0));
         return wrapper;
     }
