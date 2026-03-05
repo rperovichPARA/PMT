@@ -40,7 +40,7 @@ class PriceRefreshWorker(QThread):
     """Refresh live prices for all non-cash positions."""
 
     price_updated = pyqtSignal(str, float)
-    progress_updated = pyqtSignal(int)
+    progress_updated = pyqtSignal(int, str)
     completed = pyqtSignal()
     error = pyqtSignal(str)
 
@@ -51,7 +51,9 @@ class PriceRefreshWorker(QThread):
     def run(self) -> None:
         try:
             count = 0
+            total = len(self.portfolio)
             # Exchange rate first
+            self.progress_updated.emit(0, "Fetching USD/JPY exchange rate...")
             try:
                 ticker = yf.Ticker("USDJPY=X")
                 info = ticker.info
@@ -64,9 +66,16 @@ class PriceRefreshWorker(QThread):
             for symbol, position in self.portfolio.items():
                 if symbol == "JPY":
                     count += 1
-                    self.progress_updated.emit(count)
+                    self.progress_updated.emit(
+                        int(count / max(total, 1) * 100),
+                        f"Skipping cash position {symbol}...",
+                    )
                     continue
                 if not position.is_cash:
+                    self.progress_updated.emit(
+                        int(count / max(total, 1) * 100),
+                        f"Fetching price for {symbol} ({count + 1}/{total})...",
+                    )
                     try:
                         fetch_symbol = f"{symbol}.T"
                         ticker = yf.Ticker(fetch_symbol)
@@ -77,8 +86,8 @@ class PriceRefreshWorker(QThread):
                     except Exception:
                         pass
                 count += 1
-                self.progress_updated.emit(count)
 
+            self.progress_updated.emit(100, "Price refresh complete")
             self.completed.emit()
         except Exception as exc:
             self.error.emit(f"Error refreshing prices: {exc}")

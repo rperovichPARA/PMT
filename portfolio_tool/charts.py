@@ -123,9 +123,11 @@ def build_cash_path_chart(
             bar_positions,
             series["values"],
             bar_width,
-            alpha=0.7,
+            alpha=0.5,
             color=series["color"],
             label=series["label"],
+            linewidth=0.5,
+            edgecolor=series["color"],
         )
         legend_handles.append(bars)
         offset += bar_width
@@ -139,8 +141,10 @@ def build_cash_path_chart(
     cash_line = ax2.plot(
         range(len(cash_position)),
         cash_position,
-        "b-",
+        color="#1a53ff",
+        linestyle="-",
         linewidth=2,
+        marker="",
         label="Cash Position (USD)",
     )
     legend_handles.append(cash_line[0])

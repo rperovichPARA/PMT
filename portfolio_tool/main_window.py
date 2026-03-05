@@ -8,7 +8,7 @@ from datetime import datetime
 
 import pandas as pd
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QBrush, QColor
+from PyQt5.QtGui import QBrush, QColor, QFont, QKeySequence
 from PyQt5.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QGridLayout,
     QScrollArea,
+    QShortcut,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -87,6 +88,12 @@ class PortfolioManager(QMainWindow):
         self._sort_column: int | None = None
         self._sort_reverse = False
 
+        # Font scaling
+        self._base_font_size = QApplication.font().pointSize()
+        if self._base_font_size < 1:
+            self._base_font_size = 10
+        self._font_size = self._base_font_size
+
         self._build_ui()
         self._update_exchange_rate()
 
@@ -135,6 +142,16 @@ class PortfolioManager(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction("Exit", self.close)
 
+        view_menu = mb.addMenu("View")
+        view_menu.addAction("Increase Font Size\tCtrl++", self._increase_font)
+        view_menu.addAction("Decrease Font Size\tCtrl+-", self._decrease_font)
+        view_menu.addAction("Reset Font Size\tCtrl+0", self._reset_font)
+
+        QShortcut(QKeySequence("Ctrl++"), self, self._increase_font)
+        QShortcut(QKeySequence("Ctrl+-"), self, self._decrease_font)
+        QShortcut(QKeySequence("Ctrl+="), self, self._increase_font)
+        QShortcut(QKeySequence("Ctrl+0"), self, self._reset_font)
+
         settings = mb.addMenu("Settings")
         price_menu = settings.addMenu("Price Source")
 
@@ -146,6 +163,31 @@ class PortfolioManager(QMainWindow):
         self._yfinance_price_action = price_menu.addAction("Use YFinance Prices")
         self._yfinance_price_action.setCheckable(True)
         self._yfinance_price_action.triggered.connect(self._set_yfinance_prices)
+
+    # =====================================================================
+    #  FONT SCALING
+    # =====================================================================
+
+    def _increase_font(self) -> None:
+        self._set_font_size(self._font_size + 1)
+
+    def _decrease_font(self) -> None:
+        self._set_font_size(self._font_size - 1)
+
+    def _reset_font(self) -> None:
+        self._set_font_size(self._base_font_size)
+
+    def _set_font_size(self, size: int) -> None:
+        size = max(6, min(size, 30))
+        if size == self._font_size:
+            return
+        self._font_size = size
+        font = QApplication.font()
+        font.setPointSize(size)
+        QApplication.setFont(font)
+        # Refresh chart if visible so chart fonts update too
+        if self.chart_visible:
+            self._create_cash_path_chart()
 
     def _set_excel_prices(self) -> None:
         if not self._excel_price_action.isChecked():
@@ -306,6 +348,7 @@ class PortfolioManager(QMainWindow):
         self._right_splitter = QSplitter(Qt.Vertical)
 
         trades_group = QGroupBox("Proposed Trades")
+        trades_group.setMinimumHeight(80)
         tl = QVBoxLayout(trades_group)
 
         top = QHBoxLayout()
@@ -325,6 +368,7 @@ class PortfolioManager(QMainWindow):
             QHeaderView.Interactive
         )
         self._proposed_table.horizontalHeader().setStretchLastSection(False)
+        self._proposed_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         cols = [
             "Trade Type", "Ticker", "Name", "Shares", "USD Value",
             "Trading Days", "Avg Rel Weight", "Target Price", "% to Curr Price",
@@ -363,6 +407,9 @@ class PortfolioManager(QMainWindow):
         self._chart_frame.setVisible(False)
         self._right_splitter.addWidget(self._chart_frame)
         self._right_splitter.setSizes([350, 0])
+        # Allow the chart (index 1) to expand; trades (index 0) can shrink
+        self._right_splitter.setStretchFactor(0, 0)
+        self._right_splitter.setStretchFactor(1, 1)
 
         parent_layout.addWidget(self._right_splitter)
 
@@ -656,10 +703,12 @@ class PortfolioManager(QMainWindow):
     def _refresh_prices(self) -> None:
         if not self.portfolio:
             return
-        progress = self._make_progress("Refreshing prices...", len(self.portfolio))
+        progress = self._make_progress("Refreshing prices...", 100)
         self._price_worker = PriceRefreshWorker(self.portfolio)
         self._price_worker.price_updated.connect(self._on_price_updated)
-        self._price_worker.progress_updated.connect(progress.setValue)
+        self._price_worker.progress_updated.connect(
+            lambda v, s: self._update_progress(progress, v, s)
+        )
         self._price_worker.completed.connect(progress.close)
         self._price_worker.error.connect(
             lambda msg: self._on_import_error(progress, msg)
@@ -1549,7 +1598,7 @@ class PortfolioManager(QMainWindow):
             self.chart_visible = True
             self._cash_path_btn.setText("Hide Cash Path")
             h = self._right_splitter.size().height()
-            self._right_splitter.setSizes([h // 2, h // 2])
+            self._right_splitter.setSizes([h // 3, 2 * h // 3])
 
     def _create_cash_path_chart(self) -> None:
         for i in reversed(range(self._chart_layout.count())):
@@ -1679,6 +1728,7 @@ class PortfolioManager(QMainWindow):
     def _make_progress(self, text: str, maximum: int) -> QProgressDialog:
         p = QProgressDialog(text, "Cancel", 0, maximum, self)
         p.setWindowModality(Qt.WindowModal)
+        p.setMinimumWidth(400)
         p.setValue(0)
         p.show()
         return p

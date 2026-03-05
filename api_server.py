@@ -55,6 +55,22 @@ def _jquants_get(path: str, params: dict | None = None) -> dict:
     return resp.json()
 
 
+def _fetch_usd_jpy_rate() -> float | None:
+    """Fetch current USD/JPY rate from a public API.  Returns None on failure."""
+    try:
+        resp = http_requests.get(
+            "https://api.exchangerate-api.com/v4/latest/USD",
+            timeout=10,
+        )
+        resp.raise_for_status()
+        rate = resp.json().get("rates", {}).get("JPY")
+        if rate and float(rate) > 1.0:
+            return float(rate)
+    except Exception as e:
+        print(f"  FX rate fetch failed: {e}")
+    return None
+
+
 app = FastAPI(title="Paradaim Portfolio.Tool API", version="2.0.0")
 
 app.add_middleware(
@@ -659,6 +675,12 @@ def refresh_prices():
     adv_updated = 0
     errors = []
 
+    # Fetch current USD/JPY rate
+    live_rate = _fetch_usd_jpy_rate()
+    if live_rate:
+        _state["usd_jpy_rate"] = live_rate
+        print(f"  USD/JPY rate updated: {live_rate:.2f}")
+
     # Date range for 3-month ADV calculation
     today = datetime.now()
     date_to = today.strftime("%Y%m%d")
@@ -677,8 +699,8 @@ def refresh_prices():
                 "from": date_from,
                 "to": date_to,
             })
-            # Response contains "daily_quotes" (v1) or "bars" (v2) key
-            bars = data.get("bars") or data.get("daily_quotes") or []
+            # V2 response uses "data" key
+            bars = data.get("data") or data.get("eq_bars_daily") or []
             if not bars:
                 print(f"  {symbol}: no bars returned from J-Quants")
                 errors.append(f"{symbol}: no data")
@@ -765,13 +787,14 @@ def debug_jquants(symbol: str):
         data = _jquants_get("/equities/bars/daily", {
             "code": code, "from": date_from, "to": date_to,
         })
-        bars = data.get("bars") or data.get("daily_quotes") or []
+        bars = data.get("data") or data.get("eq_bars_daily") or []
         return {
             "code": code,
             "raw_keys": list(data.keys()),
             "num_bars": len(bars),
             "sample_bar": bars[-1] if bars else None,
             "all_field_names": list(bars[0].keys()) if bars else [],
+            "raw_response": data if not bars else None,
         }
     except Exception as e:
         return {"code": code, "error": str(e)}

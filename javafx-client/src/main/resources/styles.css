@@ -22,6 +22,18 @@
     -fx-background-color: #f9f9f9;
 }
 
+.table-view .table-row-cell:selected {
+    -fx-background-color: #cce5ff;
+}
+
+.table-view .table-row-cell:selected:odd {
+    -fx-background-color: #cce5ff;
+}
+
+.table-view .table-row-cell:selected .text {
+    -fx-fill: black;
+}
+
 /* Buy/Sell colors */
 .buy-cell {
     -fx-text-fill: #008800;
@@ -97,4 +109,19 @@
 
 .disconnected {
     -fx-text-fill: #cc0000;
+}
+
+/* Cash path chart styling */
+.chart-series-line {
+    -fx-stroke-width: 1px;
+}
+
+.default-color0.chart-series-line {
+    -fx-stroke: #1a53ff;
+    -fx-stroke-width: 2.5px;
+}
+
+.chart-line-symbol {
+    -fx-background-radius: 0;
+    -fx-padding: 0;
 }

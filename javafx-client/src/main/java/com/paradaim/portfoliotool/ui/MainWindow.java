@@ -18,6 +18,9 @@ import javafx.scene.chart.NumberAxis;
 import javafx.scene.chart.XYChart;
 import javafx.scene.control.*;
 import javafx.scene.control.cell.PropertyValueFactory;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyCodeCombination;
+import javafx.scene.input.KeyCombination;
 import javafx.scene.layout.*;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
@@ -57,12 +60,19 @@ public class MainWindow {
     private Button cashPathBtn;
     private VBox cashPathPanel;
     private boolean cashPathVisible = false;
+    private SplitPane tradeChartSplit;
+
+    // Font scaling
+    private int fontSize = 12;
+    private static final int MIN_FONT_SIZE = 8;
+    private static final int MAX_FONT_SIZE = 24;
 
     public MainWindow(ApiClient api, Stage stage) {
         this.api = api;
         this.stage = stage;
         this.root = new BorderPane();
         buildUI();
+        setupKeyboardShortcuts();
     }
 
     public Parent getRoot() {
@@ -107,7 +117,20 @@ public class MainWindow {
         toggleCashPathItem.setOnAction(e -> toggleCashPath());
         MenuItem refreshView = new MenuItem("Refresh Data");
         refreshView.setOnAction(e -> refreshAll());
-        viewMenu.getItems().addAll(toggleFilings, toggleCashPathItem, refreshView);
+
+        SeparatorMenuItem viewSep = new SeparatorMenuItem();
+        MenuItem increaseFontItem = new MenuItem("Increase Font Size");
+        increaseFontItem.setAccelerator(new KeyCodeCombination(KeyCode.EQUALS, KeyCombination.CONTROL_DOWN));
+        increaseFontItem.setOnAction(e -> changeFontSize(1));
+        MenuItem decreaseFontItem = new MenuItem("Decrease Font Size");
+        decreaseFontItem.setAccelerator(new KeyCodeCombination(KeyCode.MINUS, KeyCombination.CONTROL_DOWN));
+        decreaseFontItem.setOnAction(e -> changeFontSize(-1));
+        MenuItem resetFontItem = new MenuItem("Reset Font Size");
+        resetFontItem.setAccelerator(new KeyCodeCombination(KeyCode.DIGIT0, KeyCombination.CONTROL_DOWN));
+        resetFontItem.setOnAction(e -> { fontSize = 12; applyFontSize(); });
+
+        viewMenu.getItems().addAll(toggleFilings, toggleCashPathItem, refreshView,
+                viewSep, increaseFontItem, decreaseFontItem, resetFontItem);
 
         menuBar.getMenus().addAll(fileMenu, actionsMenu, viewMenu);
         return menuBar;
@@ -175,6 +198,11 @@ public class MainWindow {
         portfolioTable = new TableView<>(portfolioData);
         portfolioTable.setPlaceholder(new Label("Import a portfolio to begin"));
         portfolioTable.getSelectionModel().setSelectionMode(SelectionMode.SINGLE);
+        portfolioTable.setOnMouseClicked(event -> {
+            if (event.getClickCount() == 2 && portfolioTable.getSelectionModel().getSelectedItem() != null) {
+                createTrade();
+            }
+        });
         VBox.setVgrow(portfolioTable, Priority.ALWAYS);
 
         buildPortfolioColumns();
@@ -344,7 +372,7 @@ public class MainWindow {
 
         tradesTable = new TableView<>(tradesData);
         tradesTable.setPlaceholder(new Label("No proposed trades"));
-        VBox.setVgrow(tradesTable, Priority.ALWAYS);
+        tradesTable.setMinHeight(80);
 
         TableColumn<ExecutionData, String> typeCol = new TableColumn<>("Type");
         typeCol.setCellValueFactory(new PropertyValueFactory<>("tradeType"));
@@ -416,12 +444,20 @@ public class MainWindow {
         netLabel.setStyle("-fx-font-weight: bold;");
         netLabel.setId("netTotalLabel");
 
+        // Trades content (table + net label)
+        VBox tradesContent = new VBox(4, tradesTable, netLabel);
+        VBox.setVgrow(tradesTable, Priority.ALWAYS);
+
         // Cash path chart panel (hidden by default)
         cashPathPanel = new VBox(4);
-        cashPathPanel.setVisible(false);
-        cashPathPanel.setManaged(false);
 
-        panel.getChildren().addAll(header, toolbar, tradesTable, netLabel, cashPathPanel);
+        // Vertical split between trades and chart
+        tradeChartSplit = new SplitPane();
+        tradeChartSplit.setOrientation(Orientation.VERTICAL);
+        tradeChartSplit.getItems().add(tradesContent);
+        VBox.setVgrow(tradeChartSplit, Priority.ALWAYS);
+
+        panel.getChildren().addAll(header, toolbar, tradeChartSplit);
         return panel;
     }
 
@@ -486,6 +522,26 @@ public class MainWindow {
             @SuppressWarnings("unchecked")
             List<FilingData> filings = (List<FilingData>) data[3];
 
+            // Save current sort state by column index
+            List<Integer> sortColIndices = new ArrayList<>();
+            List<TableColumn.SortType> sortTypes = new ArrayList<>();
+            for (TableColumn<PositionRow, ?> col : portfolioTable.getSortOrder()) {
+                int idx = portfolioTable.getColumns().indexOf(col);
+                if (idx < 0) {
+                    // Check nested columns (fund group children)
+                    for (int g = 0; g < portfolioTable.getColumns().size(); g++) {
+                        TableColumn<PositionRow, ?> parent = portfolioTable.getColumns().get(g);
+                        int sub = parent.getColumns().indexOf(col);
+                        if (sub >= 0) {
+                            idx = g * 100 + sub;  // encode as parent*100 + child
+                            break;
+                        }
+                    }
+                }
+                sortColIndices.add(idx);
+                sortTypes.add(col.getSortType());
+            }
+
             positions = pos;
             fundNames = summary.getFundNames() != null ? summary.getFundNames() : new ArrayList<>();
 
@@ -494,6 +550,34 @@ public class MainWindow {
             updateTradesTable(trades);
             updateFilingsTable(filings);
             updateSummary(summary);
+
+            // Restore sort order
+            if (!sortColIndices.isEmpty()) {
+                List<TableColumn<PositionRow, ?>> newSortOrder = new ArrayList<>();
+                for (int i = 0; i < sortColIndices.size(); i++) {
+                    int idx = sortColIndices.get(i);
+                    TableColumn<PositionRow, ?> col = null;
+                    if (idx >= 100) {
+                        int parentIdx = idx / 100;
+                        int childIdx = idx % 100;
+                        if (parentIdx < portfolioTable.getColumns().size()) {
+                            var parent = portfolioTable.getColumns().get(parentIdx);
+                            if (childIdx < parent.getColumns().size()) {
+                                col = parent.getColumns().get(childIdx);
+                            }
+                        }
+                    } else if (idx >= 0 && idx < portfolioTable.getColumns().size()) {
+                        col = portfolioTable.getColumns().get(idx);
+                    }
+                    if (col != null) {
+                        col.setSortType(sortTypes.get(i));
+                        newSortOrder.add(col);
+                    }
+                }
+                portfolioTable.getSortOrder().setAll(newSortOrder);
+                portfolioTable.sort();
+            }
+
             setStatus("Data refreshed");
             refreshCashPath();
         });
@@ -507,10 +591,14 @@ public class MainWindow {
         if (file == null) return;
 
         setStatus("Importing portfolio...");
+        ProgressDialog progress = showProgressDialog("Importing Portfolio",
+                "Reading and processing " + file.getName() + "...");
+        progress.show();
         runAsync(() -> api.importPortfolio(file), msg -> {
+            progress.close();
             setStatus(msg);
             refreshAll();
-        });
+        }, progress);
     }
 
     private void importFilings() {
@@ -587,10 +675,14 @@ public class MainWindow {
 
     private void refreshPrices() {
         setStatus("Refreshing prices from J-Quants...");
+        ProgressDialog progress = showProgressDialog("Refreshing Prices",
+                "Fetching latest prices and ADV data from J-Quants...");
+        progress.show();
         runAsync(() -> api.refreshPrices(), msg -> {
+            progress.close();
             setStatus(msg);
             refreshAll();
-        });
+        }, progress);
     }
 
     private void editTargetPrice() {
@@ -661,11 +753,23 @@ public class MainWindow {
             cashPathBtn.setText("Hide Cash Path");
             cashPathPanel.setVisible(true);
             cashPathPanel.setManaged(true);
+
+            // Add chart panel to the split pane if not already there
+            ScrollPane chartScroll = new ScrollPane(cashPathPanel);
+            chartScroll.setFitToWidth(true);
+            if (tradeChartSplit.getItems().size() < 2) {
+                tradeChartSplit.getItems().add(chartScroll);
+            }
+            tradeChartSplit.setDividerPositions(0.33);
             refreshCashPath();
         } else {
             cashPathBtn.setText("Show Cash Path");
             cashPathPanel.setVisible(false);
             cashPathPanel.setManaged(false);
+            // Remove chart from split pane
+            if (tradeChartSplit.getItems().size() > 1) {
+                tradeChartSplit.getItems().remove(1);
+            }
         }
     }
 
@@ -707,7 +811,7 @@ public class MainWindow {
         chart.setTitle(String.format("%s — Cash: %.1fmm | Min: %.1fmm | End: %.1fmm",
                 resp.getFund(), resp.getCurrentCashMm(), resp.getMinCashMm(), resp.getEndingCashMm()));
         chart.setPrefHeight(220);
-        chart.setCreateSymbols(true);
+        chart.setCreateSymbols(false);
         chart.setAnimated(false);
         chart.setLegendVisible(true);
 
@@ -718,6 +822,9 @@ public class MainWindow {
             cashSeries.getData().add(new XYChart.Data<>(pt.getDay(), pt.getCashMm()));
         }
         chart.getData().add(cashSeries);
+
+        // Style the cash position line: thick, bold blue
+        cashSeries.getNode().setStyle("-fx-stroke: #1a53ff; -fx-stroke-width: 2.5px;");
 
         // Per-security cumulative contribution lines
         // These show how each trade adds to/subtracts from cash over its trading days
@@ -734,6 +841,9 @@ public class MainWindow {
                 tradeSeries.getData().add(new XYChart.Data<>(s.getDays().get(i), cumulative));
             }
             chart.getData().add(tradeSeries);
+
+            // Style trade lines: thinner, lighter
+            tradeSeries.getNode().setStyle("-fx-stroke-width: 1px; -fx-opacity: 0.7;");
         }
 
         // --- Trade breakdown summary below the chart ---
@@ -802,6 +912,90 @@ public class MainWindow {
     }
 
     // =========================================================================
+    //  Font scaling
+    // =========================================================================
+
+    private void setupKeyboardShortcuts() {
+        root.setOnKeyPressed(event -> {
+            if (event.isControlDown()) {
+                if (event.getCode() == KeyCode.EQUALS || event.getCode() == KeyCode.PLUS) {
+                    changeFontSize(1);
+                    event.consume();
+                } else if (event.getCode() == KeyCode.MINUS) {
+                    changeFontSize(-1);
+                    event.consume();
+                } else if (event.getCode() == KeyCode.DIGIT0) {
+                    fontSize = 12;
+                    applyFontSize();
+                    event.consume();
+                }
+            }
+        });
+    }
+
+    private void changeFontSize(int delta) {
+        int newSize = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, fontSize + delta));
+        if (newSize != fontSize) {
+            fontSize = newSize;
+            applyFontSize();
+        }
+    }
+
+    private void applyFontSize() {
+        root.setStyle(String.format("-fx-font-size: %dpx;", fontSize));
+    }
+
+    // =========================================================================
+    //  Progress dialog
+    // =========================================================================
+
+    private ProgressDialog showProgressDialog(String title, String message) {
+        return new ProgressDialog(stage, title, message);
+    }
+
+    /**
+     * Simple modal progress dialog with an indeterminate progress bar.
+     */
+    private static class ProgressDialog {
+        private final javafx.stage.Stage dialog;
+        private final Label messageLabel;
+        private final ProgressBar progressBar;
+
+        ProgressDialog(Stage owner, String title, String message) {
+            dialog = new javafx.stage.Stage();
+            dialog.initOwner(owner);
+            dialog.initModality(javafx.stage.Modality.APPLICATION_MODAL);
+            dialog.setTitle(title);
+            dialog.setResizable(false);
+
+            messageLabel = new Label(message);
+            messageLabel.setWrapText(true);
+
+            progressBar = new ProgressBar(-1); // indeterminate
+            progressBar.setPrefWidth(350);
+
+            VBox content = new VBox(12, messageLabel, progressBar);
+            content.setPadding(new Insets(20));
+            content.setAlignment(Pos.CENTER);
+
+            dialog.setScene(new javafx.scene.Scene(content));
+            dialog.setOnCloseRequest(e -> e.consume()); // prevent manual close
+        }
+
+        void show() {
+            Platform.runLater(() -> dialog.show());
+        }
+
+        void updateMessage(String msg) {
+            Platform.runLater(() -> messageLabel.setText(msg));
+        }
+
+        void close() {
+            Platform.runLater(() -> dialog.close());
+        }
+    }
+
+    // =========================================================================
     //  Helpers
     // =========================================================================
 
@@ -833,6 +1027,11 @@ public class MainWindow {
      * Run a task asynchronously and handle the result on the JavaFX thread.
      */
     private <T> void runAsync(ThrowingSupplier<T> task, java.util.function.Consumer<T> onSuccess) {
+        runAsync(task, onSuccess, null);
+    }
+
+    private <T> void runAsync(ThrowingSupplier<T> task, java.util.function.Consumer<T> onSuccess,
+                               ProgressDialog progress) {
         CompletableFuture.supplyAsync(() -> {
             try {
                 return task.get();
@@ -842,6 +1041,7 @@ public class MainWindow {
         }).thenAccept(result -> Platform.runLater(() -> onSuccess.accept(result)))
           .exceptionally(ex -> {
               Platform.runLater(() -> {
+                  if (progress != null) progress.close();
                   setStatus("Error: " + ex.getCause().getMessage());
                   showError("Error", ex.getCause().getMessage());
               });
