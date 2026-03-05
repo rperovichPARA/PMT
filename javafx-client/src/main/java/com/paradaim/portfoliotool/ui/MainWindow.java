@@ -884,10 +884,13 @@ public class MainWindow {
         double net = trades.stream().mapToDouble(ExecutionData::getTradeValueSigned).sum();
         Label netLabel = (Label) root.lookup("#netTotalLabel");
         if (netLabel != null) {
-            netLabel.setText(String.format("Net Total: %s USD", formatNumber(net)));
-            if (net > 0) {
+            // Negate so that net sells (raising cash) show as positive/green
+            // and net buys (deploying cash) show as negative/red
+            double display = -net;
+            netLabel.setText(String.format("Net Total: %s USD", formatNumber(display)));
+            if (display > 0) {
                 netLabel.setStyle("-fx-font-weight: bold; -fx-text-fill: #008800;");
-            } else if (net < 0) {
+            } else if (display < 0) {
                 netLabel.setStyle("-fx-font-weight: bold; -fx-text-fill: #cc0000;");
             } else {
                 netLabel.setStyle("-fx-font-weight: bold;");
