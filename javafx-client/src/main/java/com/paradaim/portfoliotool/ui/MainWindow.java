@@ -13,6 +13,9 @@ import javafx.geometry.Insets;
 import javafx.geometry.Orientation;
 import javafx.geometry.Pos;
 import javafx.scene.Parent;
+import javafx.scene.chart.LineChart;
+import javafx.scene.chart.NumberAxis;
+import javafx.scene.chart.XYChart;
 import javafx.scene.control.*;
 import javafx.scene.control.cell.PropertyValueFactory;
 import javafx.scene.layout.*;
@@ -51,6 +54,9 @@ public class MainWindow {
     private SplitPane mainSplit;
     private VBox filingsPanel;
     private boolean filingsVisible = false;
+    private Button cashPathBtn;
+    private VBox cashPathPanel;
+    private boolean cashPathVisible = false;
 
     public MainWindow(ApiClient api, Stage stage) {
         this.api = api;
@@ -97,9 +103,11 @@ public class MainWindow {
         Menu viewMenu = new Menu("View");
         MenuItem toggleFilings = new MenuItem("Toggle Filings Panel");
         toggleFilings.setOnAction(e -> toggleFilings());
+        MenuItem toggleCashPathItem = new MenuItem("Toggle Cash Path");
+        toggleCashPathItem.setOnAction(e -> toggleCashPath());
         MenuItem refreshView = new MenuItem("Refresh Data");
         refreshView.setOnAction(e -> refreshAll());
-        viewMenu.getItems().addAll(toggleFilings, refreshView);
+        viewMenu.getItems().addAll(toggleFilings, toggleCashPathItem, refreshView);
 
         menuBar.getMenus().addAll(fileMenu, actionsMenu, viewMenu);
         return menuBar;
@@ -330,7 +338,9 @@ public class MainWindow {
         Button deleteBtn = new Button("Delete Trade");
         deleteBtn.getStyleClass().add("danger");
         deleteBtn.setOnAction(e -> deleteTrade());
-        toolbar.getChildren().addAll(editPriceBtn, deleteBtn);
+        cashPathBtn = new Button("Show Cash Path");
+        cashPathBtn.setOnAction(e -> toggleCashPath());
+        toolbar.getChildren().addAll(editPriceBtn, deleteBtn, cashPathBtn);
 
         tradesTable = new TableView<>(tradesData);
         tradesTable.setPlaceholder(new Label("No proposed trades"));
@@ -406,7 +416,12 @@ public class MainWindow {
         netLabel.setStyle("-fx-font-weight: bold;");
         netLabel.setId("netTotalLabel");
 
-        panel.getChildren().addAll(header, toolbar, tradesTable, netLabel);
+        // Cash path chart panel (hidden by default)
+        cashPathPanel = new VBox(4);
+        cashPathPanel.setVisible(false);
+        cashPathPanel.setManaged(false);
+
+        panel.getChildren().addAll(header, toolbar, tradesTable, netLabel, cashPathPanel);
         return panel;
     }
 
@@ -480,6 +495,7 @@ public class MainWindow {
             updateFilingsTable(filings);
             updateSummary(summary);
             setStatus("Data refreshed");
+            refreshCashPath();
         });
     }
 
@@ -637,6 +653,82 @@ public class MainWindow {
             filingsPanel.setVisible(false);
             filingsPanel.setManaged(false);
         }
+    }
+
+    private void toggleCashPath() {
+        cashPathVisible = !cashPathVisible;
+        if (cashPathVisible) {
+            cashPathBtn.setText("Hide Cash Path");
+            cashPathPanel.setVisible(true);
+            cashPathPanel.setManaged(true);
+            refreshCashPath();
+        } else {
+            cashPathBtn.setText("Show Cash Path");
+            cashPathPanel.setVisible(false);
+            cashPathPanel.setManaged(false);
+        }
+    }
+
+    private void refreshCashPath() {
+        if (!cashPathVisible || fundNames.isEmpty()) return;
+        setStatus("Loading cash path...");
+
+        runAsync(() -> {
+            List<CashPathResponse> responses = new ArrayList<>();
+            for (String fund : fundNames) {
+                responses.add(api.getCashPath(fund));
+            }
+            return responses;
+        }, responses -> {
+            cashPathPanel.getChildren().clear();
+            for (CashPathResponse resp : responses) {
+                cashPathPanel.getChildren().add(buildCashPathChart(resp));
+            }
+            setStatus("Cash path loaded");
+        });
+    }
+
+    @SuppressWarnings("unchecked")
+    private VBox buildCashPathChart(CashPathResponse resp) {
+        NumberAxis xAxis = new NumberAxis();
+        xAxis.setLabel("Trading Day");
+        xAxis.setAutoRanging(false);
+        int maxDay = resp.getCashPath().stream().mapToInt(CashPathPoint::getDay).max().orElse(5);
+        xAxis.setLowerBound(0);
+        xAxis.setUpperBound(maxDay);
+        xAxis.setTickUnit(1);
+
+        NumberAxis yAxis = new NumberAxis();
+        yAxis.setLabel("Cash (mm USD)");
+
+        LineChart<Number, Number> chart = new LineChart<>(xAxis, yAxis);
+        chart.setTitle(String.format("%s — Cash: %.1fmm | Min: %.1fmm | End: %.1fmm",
+                resp.getFund(), resp.getCurrentCashMm(), resp.getMinCashMm(), resp.getEndingCashMm()));
+        chart.setPrefHeight(250);
+        chart.setCreateSymbols(true);
+        chart.setAnimated(false);
+
+        // Cash position line
+        XYChart.Series<Number, Number> cashSeries = new XYChart.Series<>();
+        cashSeries.setName("Cash Position");
+        for (CashPathPoint pt : resp.getCashPath()) {
+            cashSeries.getData().add(new XYChart.Data<>(pt.getDay(), pt.getCashMm()));
+        }
+        chart.getData().add(cashSeries);
+
+        // Trade contribution series
+        for (CashPathSeries s : resp.getSeries()) {
+            XYChart.Series<Number, Number> tradeSeries = new XYChart.Series<>();
+            tradeSeries.setName(s.getSymbol() + " (" + s.getTradeType() + ")");
+            for (int i = 0; i < s.getDays().size(); i++) {
+                tradeSeries.getData().add(new XYChart.Data<>(s.getDays().get(i), s.getValues().get(i)));
+            }
+            chart.getData().add(tradeSeries);
+        }
+
+        VBox wrapper = new VBox(chart);
+        wrapper.setPadding(new Insets(4, 0, 4, 0));
+        return wrapper;
     }
 
     // =========================================================================
