@@ -23,6 +23,36 @@ public class PositionData {
     private double totalPctOfCompany;
     private Map<String, FundPositionData> funds;
 
+    // Metrics fields
+    private Double pbr;
+    @JsonProperty("pe_ltm")
+    private Double peLtm;
+    @JsonProperty("pe_ntm")
+    private Double peNtm;
+    @JsonProperty("pe_24m")
+    private Double pe24m;
+    @JsonProperty("peg_c")
+    private Double pegC;
+    @JsonProperty("peg_n")
+    private Double pegN;
+    @JsonProperty("roe_l")
+    private Double roeL;
+    @JsonProperty("roe_ntm")
+    private Double roeNtm;
+    private Double plowback;
+    private Double beta;
+    @JsonProperty("div_yield")
+    private Double divYield;
+    @JsonProperty("payout_ratio")
+    private Double payoutRatio;
+    private Double opm;
+    @JsonProperty("sales_cagr_2y")
+    private Double salesCagr2y;
+    @JsonProperty("op_cagr_2y")
+    private Double opCagr2y;
+    @JsonProperty("eps_cagr_2y")
+    private Double epsCagr2y;
+
     public String getSymbol() { return symbol; }
     public void setSymbol(String v) { this.symbol = v; }
 
@@ -52,4 +82,37 @@ public class PositionData {
 
     public Map<String, FundPositionData> getFunds() { return funds; }
     public void setFunds(Map<String, FundPositionData> v) { this.funds = v; }
+
+    public Double getPbr() { return pbr; }
+    public void setPbr(Double v) { this.pbr = v; }
+    public Double getPeLtm() { return peLtm; }
+    public void setPeLtm(Double v) { this.peLtm = v; }
+    public Double getPeNtm() { return peNtm; }
+    public void setPeNtm(Double v) { this.peNtm = v; }
+    public Double getPe24m() { return pe24m; }
+    public void setPe24m(Double v) { this.pe24m = v; }
+    public Double getPegC() { return pegC; }
+    public void setPegC(Double v) { this.pegC = v; }
+    public Double getPegN() { return pegN; }
+    public void setPegN(Double v) { this.pegN = v; }
+    public Double getRoeL() { return roeL; }
+    public void setRoeL(Double v) { this.roeL = v; }
+    public Double getRoeNtm() { return roeNtm; }
+    public void setRoeNtm(Double v) { this.roeNtm = v; }
+    public Double getPlowback() { return plowback; }
+    public void setPlowback(Double v) { this.plowback = v; }
+    public Double getBeta() { return beta; }
+    public void setBeta(Double v) { this.beta = v; }
+    public Double getDivYield() { return divYield; }
+    public void setDivYield(Double v) { this.divYield = v; }
+    public Double getPayoutRatio() { return payoutRatio; }
+    public void setPayoutRatio(Double v) { this.payoutRatio = v; }
+    public Double getOpm() { return opm; }
+    public void setOpm(Double v) { this.opm = v; }
+    public Double getSalesCagr2y() { return salesCagr2y; }
+    public void setSalesCagr2y(Double v) { this.salesCagr2y = v; }
+    public Double getOpCagr2y() { return opCagr2y; }
+    public void setOpCagr2y(Double v) { this.opCagr2y = v; }
+    public Double getEpsCagr2y() { return epsCagr2y; }
+    public void setEpsCagr2y(Double v) { this.epsCagr2y = v; }
 }

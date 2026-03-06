@@ -60,7 +60,7 @@ public class MainWindow {
     private Button cashPathBtn;
     private VBox cashPathPanel;
     private boolean cashPathVisible = false;
-    private SplitPane tradeChartSplit;
+    // (tradeChartSplit removed – cash path is now in bottomSplit)
 
     // Font scaling
     private int fontSize = 12;
@@ -106,9 +106,11 @@ public class MainWindow {
         Menu actionsMenu = new Menu("Actions");
         MenuItem refreshPrices = new MenuItem("Refresh Prices (J-Quants)");
         refreshPrices.setOnAction(e -> refreshPrices());
+        MenuItem refreshMetrics = new MenuItem("Refresh Metrics (J-Quants)");
+        refreshMetrics.setOnAction(e -> refreshMetrics());
         MenuItem addPosition = new MenuItem("Add Position...");
         addPosition.setOnAction(e -> addPosition());
-        actionsMenu.getItems().addAll(refreshPrices, addPosition);
+        actionsMenu.getItems().addAll(refreshPrices, refreshMetrics, addPosition);
 
         Menu viewMenu = new Menu("View");
         MenuItem toggleFilings = new MenuItem("Toggle Filings Panel");
@@ -136,11 +138,13 @@ public class MainWindow {
         return menuBar;
     }
 
+    private SplitPane bottomSplit;
+
     private SplitPane buildMainContent() {
         mainSplit = new SplitPane();
-        mainSplit.setOrientation(Orientation.HORIZONTAL);
+        mainSplit.setOrientation(Orientation.VERTICAL);
 
-        // Left: Portfolio panel
+        // Top: Portfolio panel (positions with metrics)
         VBox portfolioPanel = buildPortfolioPanel();
 
         // Middle: Filings panel (hidden by default)
@@ -148,11 +152,18 @@ public class MainWindow {
         filingsPanel.setVisible(false);
         filingsPanel.setManaged(false);
 
-        // Right: Proposed trades panel
+        // Bottom: horizontal split with trades (left) and cash path (right)
         VBox tradesPanel = buildTradesPanel();
+        cashPathPanel = new VBox(4);
+        cashPathPanel.setPadding(new Insets(8));
 
-        mainSplit.getItems().addAll(portfolioPanel, tradesPanel);
-        mainSplit.setDividerPositions(0.7);
+        bottomSplit = new SplitPane();
+        bottomSplit.setOrientation(Orientation.HORIZONTAL);
+        bottomSplit.getItems().add(tradesPanel);
+        bottomSplit.setDividerPositions(0.5);
+
+        mainSplit.getItems().addAll(portfolioPanel, bottomSplit);
+        mainSplit.setDividerPositions(0.55);
 
         return mainSplit;
     }
@@ -183,6 +194,9 @@ public class MainWindow {
         Button refreshBtn = new Button("Refresh Prices");
         refreshBtn.setOnAction(e -> refreshPrices());
 
+        Button refreshMetricsBtn = new Button("Refresh Metrics");
+        refreshMetricsBtn.setOnAction(e -> refreshMetrics());
+
         Button filingsBtn = new Button("Toggle Filings");
         filingsBtn.setOnAction(e -> toggleFilings());
 
@@ -192,7 +206,7 @@ public class MainWindow {
         summaryLabel = new Label("No portfolio loaded");
         summaryLabel.setStyle("-fx-font-style: italic;");
 
-        toolbar.getChildren().addAll(importBtn, tradeBtn, addBtn, removeBtn, refreshBtn, filingsBtn, spacer, summaryLabel);
+        toolbar.getChildren().addAll(importBtn, tradeBtn, addBtn, removeBtn, refreshBtn, refreshMetricsBtn, filingsBtn, spacer, summaryLabel);
 
         // Portfolio table
         portfolioTable = new TableView<>(portfolioData);
@@ -210,6 +224,9 @@ public class MainWindow {
         panel.getChildren().addAll(toolbar, portfolioTable);
         return panel;
     }
+
+    private static final int NUM_FIXED_COLUMNS = 4;
+    private static final int NUM_METRIC_COLUMNS = 16;
 
     private void buildPortfolioColumns() {
         portfolioTable.getColumns().clear();
@@ -233,12 +250,39 @@ public class MainWindow {
         pctCol.setStyle("-fx-alignment: CENTER-RIGHT;");
 
         portfolioTable.getColumns().addAll(symbolCol, nameCol, priceCol, pctCol);
+
+        // Metrics columns
+        addMetricCol("PBR", "pbr", 55);
+        addMetricCol("PE LTM", "peLtm", 60);
+        addMetricCol("PE NTM", "peNtm", 60);
+        addMetricCol("PE 24M", "pe24m", 60);
+        addMetricCol("PEGc", "pegC", 55);
+        addMetricCol("PEG n", "pegN", 55);
+        addMetricCol("ROE(l)", "roeL", 60);
+        addMetricCol("ROE NTM", "roeNtm", 65);
+        addMetricCol("b(plow)", "plowback", 55);
+        addMetricCol("b(vol)", "beta", 55);
+        addMetricCol("DivYld", "divYield", 60);
+        addMetricCol("Payout", "payoutRatio", 60);
+        addMetricCol("OPM", "opm", 55);
+        addMetricCol("2Y Sales", "salesCagr2y", 60);
+        addMetricCol("2Y Op", "opCagr2y", 55);
+        addMetricCol("2Y EPS", "epsCagr2y", 55);
+    }
+
+    private void addMetricCol(String header, String property, int width) {
+        TableColumn<PositionRow, String> col = new TableColumn<>(header);
+        col.setCellValueFactory(new PropertyValueFactory<>(property));
+        col.setPrefWidth(width);
+        col.setStyle("-fx-alignment: CENTER-RIGHT;");
+        portfolioTable.getColumns().add(col);
     }
 
     private void rebuildFundColumns() {
-        // Remove old fund columns (keep first 4 fixed columns)
-        while (portfolioTable.getColumns().size() > 4) {
-            portfolioTable.getColumns().remove(4);
+        // Remove old fund columns (keep fixed + metric columns)
+        int keepCount = NUM_FIXED_COLUMNS + NUM_METRIC_COLUMNS;
+        while (portfolioTable.getColumns().size() > keepCount) {
+            portfolioTable.getColumns().remove(keepCount);
         }
 
         for (int i = 0; i < fundNames.size(); i++) {
@@ -373,6 +417,7 @@ public class MainWindow {
         tradesTable = new TableView<>(tradesData);
         tradesTable.setPlaceholder(new Label("No proposed trades"));
         tradesTable.setMinHeight(80);
+        VBox.setVgrow(tradesTable, Priority.ALWAYS);
 
         TableColumn<ExecutionData, String> typeCol = new TableColumn<>("Type");
         typeCol.setCellValueFactory(new PropertyValueFactory<>("tradeType"));
@@ -444,20 +489,7 @@ public class MainWindow {
         netLabel.setStyle("-fx-font-weight: bold;");
         netLabel.setId("netTotalLabel");
 
-        // Trades content (table + net label)
-        VBox tradesContent = new VBox(4, tradesTable, netLabel);
-        VBox.setVgrow(tradesTable, Priority.ALWAYS);
-
-        // Cash path chart panel (hidden by default)
-        cashPathPanel = new VBox(4);
-
-        // Vertical split between trades and chart
-        tradeChartSplit = new SplitPane();
-        tradeChartSplit.setOrientation(Orientation.VERTICAL);
-        tradeChartSplit.getItems().add(tradesContent);
-        VBox.setVgrow(tradeChartSplit, Priority.ALWAYS);
-
-        panel.getChildren().addAll(header, toolbar, tradeChartSplit);
+        panel.getChildren().addAll(header, toolbar, tradesTable, netLabel);
         return panel;
     }
 
@@ -685,6 +717,18 @@ public class MainWindow {
         }, progress);
     }
 
+    private void refreshMetrics() {
+        setStatus("Refreshing metrics from J-Quants...");
+        ProgressDialog progress = showProgressDialog("Refreshing Metrics",
+                "Fetching fundamental metrics (statements, beta) from J-Quants...\nThis may take a minute.");
+        progress.show();
+        runAsync(() -> api.refreshMetrics(), msg -> {
+            progress.close();
+            setStatus(msg);
+            refreshAll();
+        }, progress);
+    }
+
     private void editTargetPrice() {
         ExecutionData selected = tradesTable.getSelectionModel().getSelectedItem();
         if (selected == null) {
@@ -754,21 +798,22 @@ public class MainWindow {
             cashPathPanel.setVisible(true);
             cashPathPanel.setManaged(true);
 
-            // Add chart panel to the split pane if not already there
+            // Add cash path panel to the bottom-right of the bottom split
             ScrollPane chartScroll = new ScrollPane(cashPathPanel);
             chartScroll.setFitToWidth(true);
-            if (tradeChartSplit.getItems().size() < 2) {
-                tradeChartSplit.getItems().add(chartScroll);
+            chartScroll.setFitToHeight(true);
+            if (bottomSplit.getItems().size() < 2) {
+                bottomSplit.getItems().add(chartScroll);
             }
-            tradeChartSplit.setDividerPositions(0.33);
+            bottomSplit.setDividerPositions(0.4);
             refreshCashPath();
         } else {
             cashPathBtn.setText("Show Cash Path");
             cashPathPanel.setVisible(false);
             cashPathPanel.setManaged(false);
-            // Remove chart from split pane
-            if (tradeChartSplit.getItems().size() > 1) {
-                tradeChartSplit.getItems().remove(1);
+            // Remove chart from bottom split
+            if (bottomSplit.getItems().size() > 1) {
+                bottomSplit.getItems().remove(1);
             }
         }
     }
@@ -806,14 +851,18 @@ public class MainWindow {
 
         NumberAxis yAxis = new NumberAxis();
         yAxis.setLabel("Cash Position (mm USD)");
+        yAxis.setAutoRanging(true);
 
         LineChart<Number, Number> chart = new LineChart<>(xAxis, yAxis);
         chart.setTitle(String.format("%s — Cash: %.1fmm | Min: %.1fmm | End: %.1fmm",
                 resp.getFund(), resp.getCurrentCashMm(), resp.getMinCashMm(), resp.getEndingCashMm()));
-        chart.setPrefHeight(220);
+        chart.setMinHeight(150);
+        chart.setPrefHeight(Region.USE_COMPUTED_SIZE);
+        chart.setMaxHeight(Double.MAX_VALUE);
         chart.setCreateSymbols(false);
         chart.setAnimated(false);
         chart.setLegendVisible(true);
+        VBox.setVgrow(chart, Priority.ALWAYS);
 
         // Aggregate cash position line (cumulative, reflects all buys and sells)
         XYChart.Series<Number, Number> cashSeries = new XYChart.Series<>();
@@ -862,6 +911,7 @@ public class MainWindow {
 
         VBox wrapper = new VBox(4, chart, tradeInfo);
         wrapper.setPadding(new Insets(4, 0, 4, 0));
+        VBox.setVgrow(chart, Priority.ALWAYS);
         return wrapper;
     }
 
@@ -1095,5 +1145,26 @@ public class MainWindow {
             if (fp == null || data.isCash()) return "";
             return String.format("%.2fx", fp.getNewRelWeight());
         }
+
+        // Metrics accessors
+        private String fmtOpt(Double v, String fmt) {
+            return v != null ? String.format(fmt, v) : "";
+        }
+        public String getPbr() { return fmtOpt(data.getPbr(), "%.2f"); }
+        public String getPeLtm() { return fmtOpt(data.getPeLtm(), "%.1f"); }
+        public String getPeNtm() { return fmtOpt(data.getPeNtm(), "%.1f"); }
+        public String getPe24m() { return fmtOpt(data.getPe24m(), "%.1f"); }
+        public String getPegC() { return fmtOpt(data.getPegC(), "%.2f"); }
+        public String getPegN() { return fmtOpt(data.getPegN(), "%.2f"); }
+        public String getRoeL() { return fmtOpt(data.getRoeL(), "%.1f%%"); }
+        public String getRoeNtm() { return fmtOpt(data.getRoeNtm(), "%.1f%%"); }
+        public String getPlowback() { return fmtOpt(data.getPlowback(), "%.2f"); }
+        public String getBeta() { return fmtOpt(data.getBeta(), "%.2f"); }
+        public String getDivYield() { return fmtOpt(data.getDivYield(), "%.2f%%"); }
+        public String getPayoutRatio() { return fmtOpt(data.getPayoutRatio(), "%.1f%%"); }
+        public String getOpm() { return fmtOpt(data.getOpm(), "%.1f%%"); }
+        public String getSalesCagr2y() { return fmtOpt(data.getSalesCagr2y(), "%.1f%%"); }
+        public String getOpCagr2y() { return fmtOpt(data.getOpCagr2y(), "%.1f%%"); }
+        public String getEpsCagr2y() { return fmtOpt(data.getEpsCagr2y(), "%.1f%%"); }
     }
 }
