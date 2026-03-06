@@ -235,6 +235,23 @@ public class ApiClient {
         }
     }
 
+    // -- Metrics --------------------------------------------------------------
+
+    public String refreshMetrics() throws IOException {
+        Request req = new Request.Builder()
+                .url(baseUrl + "/api/metrics/refresh")
+                .post(RequestBody.create("", MediaType.parse("application/json")))
+                .build();
+
+        try (Response resp = http.newCall(req).execute()) {
+            JsonNode node = mapper.readTree(resp.body().string());
+            if (!resp.isSuccessful()) {
+                throw new IOException(node.has("detail") ? node.get("detail").asText() : "Metrics refresh failed");
+            }
+            return node.get("message").asText();
+        }
+    }
+
     // -- Generic helpers ------------------------------------------------------
 
     private <T> T get(String path, Class<T> type) throws IOException {
