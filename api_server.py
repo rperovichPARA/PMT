@@ -819,7 +819,14 @@ def refresh_metrics():
 
         try:
             # ---- Fetch financial statements ----
-            stmt_data = _jquants_get("/fins/statements", {"code": code})
+            try:
+                stmt_data = _jquants_get("/fins/statements", {"code": code})
+            except http_requests.exceptions.HTTPError as he:
+                if he.response is not None and he.response.status_code == 403:
+                    print(f"  {symbol}: skipped (fins/statements requires premium J-Quants plan)")
+                    errors.append(f"{symbol}: 403 Forbidden – fins/statements not available on current plan")
+                    continue
+                raise
             stmts = stmt_data.get("statements") or []
             if not stmts:
                 print(f"  {symbol}: no statements data")

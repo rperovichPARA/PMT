@@ -279,10 +279,11 @@ public class MainWindow {
     }
 
     private void rebuildFundColumns() {
-        // Remove old fund columns (keep fixed + metric columns)
-        int keepCount = NUM_FIXED_COLUMNS + NUM_METRIC_COLUMNS;
-        while (portfolioTable.getColumns().size() > keepCount) {
-            portfolioTable.getColumns().remove(keepCount);
+        // Remove old fund columns (they sit between fixed columns and metric columns)
+        // Total columns = fixed + fund + metric; fund columns start at NUM_FIXED_COLUMNS
+        int totalExpected = NUM_FIXED_COLUMNS + NUM_METRIC_COLUMNS;
+        while (portfolioTable.getColumns().size() > totalExpected) {
+            portfolioTable.getColumns().remove(NUM_FIXED_COLUMNS);
         }
 
         for (int i = 0; i < fundNames.size(); i++) {
@@ -337,7 +338,8 @@ public class MainWindow {
             });
 
             fundGroup.getColumns().addAll(currCol, newCol);
-            portfolioTable.getColumns().add(fundGroup);
+            // Insert fund columns right after fixed columns (before metrics)
+            portfolioTable.getColumns().add(NUM_FIXED_COLUMNS + i, fundGroup);
         }
     }
 
