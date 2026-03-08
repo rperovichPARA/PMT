@@ -19,6 +19,7 @@ public class TradeDialog extends Dialog<Void> {
     private final ApiClient api;
     private final PositionData position;
     private final List<String> fundNames;
+    private final FilingData filingData;  // nullable – filing info for this symbol
     private boolean submitted = false;
 
     private final Map<String, Spinner<Double>> rawInputs = new LinkedHashMap<>();
@@ -26,6 +27,8 @@ public class TradeDialog extends Dialog<Void> {
     private final Map<String, Label> sharesLabels = new LinkedHashMap<>();
     private final Map<String, Label> usdLabels = new LinkedHashMap<>();
     private final Map<String, TradeResult> calculatedTrades = new LinkedHashMap<>();
+    private final Map<String, VBox> fundEntries = new LinkedHashMap<>();
+    private final Map<String, String> fundDefaultStyles = new LinkedHashMap<>();
 
     private Label newPctLabel;
     private Label changePctLabel;
@@ -37,10 +40,14 @@ public class TradeDialog extends Dialog<Void> {
         {"242", "230", "255"},  // Light purple
     };
 
-    public TradeDialog(Stage owner, ApiClient api, PositionData position, List<String> fundNames) {
+    private static final String FILING_YELLOW = "rgba(255, 255, 200, 0.8)";
+
+    public TradeDialog(Stage owner, ApiClient api, PositionData position,
+                       List<String> fundNames, FilingData filingData) {
         this.api = api;
         this.position = position;
         this.fundNames = fundNames;
+        this.filingData = filingData;
 
         setTitle("Create Trade for " + position.getSymbol());
         initOwner(owner);
@@ -97,9 +104,12 @@ public class TradeDialog extends Dialog<Void> {
 
             VBox fundEntry = new VBox(4);
             fundEntry.setPadding(new Insets(8));
-            fundEntry.setStyle(String.format(
+            String defaultStyle = String.format(
                     "-fx-background-color: rgba(%s, %s, %s, 0.3); -fx-border-color: #d0d0d0; -fx-border-radius: 4;",
-                    color[0], color[1], color[2]));
+                    color[0], color[1], color[2]);
+            fundEntry.setStyle(defaultStyle);
+            fundEntries.put(fundName, fundEntry);
+            fundDefaultStyles.put(fundName, defaultStyle);
 
             Label fundLabel = new Label(fundName);
             fundLabel.setStyle("-fx-font-weight: bold; -fx-font-size: 13px;");
@@ -159,6 +169,7 @@ public class TradeDialog extends Dialog<Void> {
             usdLabels.get(fundName).setText("");
             clearStyle(fundName);
             calculatedTrades.remove(fundName);
+            updateAggregates();
             return;
         }
 
@@ -180,6 +191,83 @@ public class TradeDialog extends Dialog<Void> {
         } catch (Exception e) {
             clearStyle(fundName);
             calculatedTrades.remove(fundName);
+        }
+
+        updateAggregates();
+    }
+
+    /**
+     * Recalculate aggregate new % of company across all funds,
+     * update the header labels, and check filing thresholds.
+     */
+    private void updateAggregates() {
+        double osShares = position.getOsShares();
+        double currentTotalQty = position.getTotalQuantity();
+        double currentPct = position.getTotalPctOfCompany();
+
+        // Sum trade quantities across all funds
+        double totalTradeShares = 0;
+        for (TradeResult trade : calculatedTrades.values()) {
+            totalTradeShares += trade.getTradeQuantity();
+        }
+
+        double newTotalQty = currentTotalQty + totalTradeShares;
+        double newPct;
+        if (osShares > 0) {
+            newPct = newTotalQty / osShares;
+        } else {
+            newPct = currentPct;
+        }
+        double changePct = newPct - currentPct;
+
+        newPctLabel.setText(String.format("New %% of Company: %.2f%%", newPct * 100));
+        changePctLabel.setText(String.format("Change %%: %+.2f%%", changePct * 100));
+
+        // Check filing thresholds and update fund entry shading
+        boolean upwardFiling = false;
+        boolean downwardFiling = false;
+
+        if (filingData != null) {
+            Double lastFiling = filingData.getLastFiling();
+            if (lastFiling != null) {
+                double upThreshold = lastFiling + 0.01;
+                double downThreshold = lastFiling - 0.01;
+                if (newPct >= upThreshold) {
+                    upwardFiling = true;
+                }
+                if (downThreshold > 0 && newPct <= downThreshold) {
+                    downwardFiling = true;
+                }
+            } else {
+                // No previous filing – upward threshold at 5%
+                if (newPct >= 0.05) {
+                    upwardFiling = true;
+                }
+            }
+        }
+
+        // Update each fund entry's background based on filing status
+        for (Map.Entry<String, VBox> entry : fundEntries.entrySet()) {
+            String fund = entry.getKey();
+            VBox fundEntry = entry.getValue();
+            TradeResult trade = calculatedTrades.get(fund);
+
+            boolean highlight = false;
+            if (trade != null && Math.abs(trade.getTradeQuantity()) >= 1) {
+                if (upwardFiling && "Buy".equals(trade.getTradeType())) {
+                    highlight = true;
+                }
+                if (downwardFiling && "Sell".equals(trade.getTradeType())) {
+                    highlight = true;
+                }
+            }
+
+            if (highlight) {
+                fundEntry.setStyle(
+                        "-fx-background-color: " + FILING_YELLOW + "; -fx-border-color: #d0d0d0; -fx-border-radius: 4;");
+            } else {
+                fundEntry.setStyle(fundDefaultStyles.get(fund));
+            }
         }
     }
 
