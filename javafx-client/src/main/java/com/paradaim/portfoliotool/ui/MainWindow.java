@@ -348,10 +348,11 @@ public class MainWindow {
     }
 
     private void rebuildFundColumns() {
-        // Remove old fund columns (keep fixed + metric columns)
-        int keepCount = NUM_FIXED_COLUMNS + NUM_METRIC_COLUMNS;
-        while (portfolioTable.getColumns().size() > keepCount) {
-            portfolioTable.getColumns().remove(keepCount);
+        // Remove old fund columns (inserted between fixed and metric columns)
+        // Fund columns sit at indices NUM_FIXED_COLUMNS .. NUM_FIXED_COLUMNS + oldFundCount - 1
+        int totalExpected = NUM_FIXED_COLUMNS + NUM_METRIC_COLUMNS;
+        while (portfolioTable.getColumns().size() > totalExpected) {
+            portfolioTable.getColumns().remove(NUM_FIXED_COLUMNS);
         }
 
         for (int i = 0; i < fundNames.size(); i++) {
@@ -406,7 +407,8 @@ public class MainWindow {
             });
 
             fundGroup.getColumns().addAll(currCol, newCol);
-            portfolioTable.getColumns().add(fundGroup);
+            // Insert fund columns right after the fixed columns (before metrics)
+            portfolioTable.getColumns().add(NUM_FIXED_COLUMNS + i, fundGroup);
         }
     }
 
@@ -655,8 +657,8 @@ public class MainWindow {
             // Restore sort order or apply default sort after import
             if (applyDefaultSort) {
                 applyDefaultSort = false;
-                // Sort by first fund's "Curr." column descending
-                int fundGroupIdx = NUM_FIXED_COLUMNS + NUM_METRIC_COLUMNS;
+                // Sort by first fund's "Curr." column descending (fund columns are right after fixed)
+                int fundGroupIdx = NUM_FIXED_COLUMNS;
                 if (fundGroupIdx < portfolioTable.getColumns().size()) {
                     TableColumn<PositionRow, ?> fundGroup = portfolioTable.getColumns().get(fundGroupIdx);
                     if (!fundGroup.getColumns().isEmpty()) {

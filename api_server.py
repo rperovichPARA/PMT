@@ -9,6 +9,7 @@ import math
 import os
 import tempfile
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -709,16 +710,33 @@ def refresh_prices():
     # Collect non-cash symbols
     symbols = [s for s, p in portfolio.items() if not p.is_cash]
 
-    for symbol in symbols:
-        position = portfolio[symbol]
-        # J-Quants uses 5-digit codes (4-digit ticker + trailing 0)
+    def _fetch_price(symbol: str) -> dict:
+        """Fetch daily bars for a single symbol. Returns result dict."""
         code = f"{symbol}0"
+        data = _jquants_get("/equities/bars/daily", {
+            "code": code,
+            "from": date_from,
+            "to": date_to,
+        })
+        return {"symbol": symbol, "data": data}
+
+    # Fetch all symbols in parallel
+    results: list[dict] = []
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {pool.submit(_fetch_price, s): s for s in symbols}
+        for future in as_completed(futures):
+            sym = futures[future]
+            try:
+                results.append(future.result())
+            except Exception as e:
+                print(f"  {sym}: ERROR {e}")
+                errors.append(f"{sym}: {e}")
+
+    for result in results:
+        symbol = result["symbol"]
+        position = portfolio[symbol]
+        data = result["data"]
         try:
-            data = _jquants_get("/equities/bars/daily", {
-                "code": code,
-                "from": date_from,
-                "to": date_to,
-            })
             # V2 response uses "data" key
             bars = data.get("data") or data.get("eq_bars_daily") or []
             if not bars:
@@ -790,6 +808,7 @@ def refresh_metrics():
 
     # ---- Fetch TOPIX daily bars for beta calculation ----
     topix_returns = []
+    topix_closes_by_date: dict[str, float] = {}
     try:
         topix_data = _jquants_get("/indices/bars/daily/topix", {
             "from": date_from_1y,
@@ -799,10 +818,14 @@ def refresh_metrics():
         if topix_bars:
             topix_closes = []
             for bar in topix_bars:
+                dt = bar.get("Date", "")
                 c = bar.get("Close") or bar.get("C")
                 if c is not None:
                     try:
-                        topix_closes.append(float(c))
+                        val = float(c)
+                        topix_closes.append(val)
+                        if dt:
+                            topix_closes_by_date[dt] = val
                     except (ValueError, TypeError):
                         pass
             if len(topix_closes) >= 2:
@@ -812,14 +835,47 @@ def refresh_metrics():
     except Exception as e:
         print(f"  TOPIX fetch error: {e}")
 
-    for symbol in symbols:
-        position = portfolio[symbol]
+    # ---- Parallel fetch: statements + stock bars for all symbols ----
+    def _fetch_symbol_data(symbol: str) -> dict:
         code = f"{symbol}0"
+        stmt_data = _jquants_get("/fins/statements", {"code": code})
+        stock_data = _jquants_get("/equities/bars/daily", {
+            "code": code,
+            "from": date_from_1y,
+            "to": date_to,
+        })
+        return {"symbol": symbol, "stmt_data": stmt_data, "stock_data": stock_data}
+
+    prefetched: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {pool.submit(_fetch_symbol_data, s): s for s in symbols}
+        for future in as_completed(futures):
+            sym = futures[future]
+            try:
+                prefetched[sym] = future.result()
+            except Exception as e:
+                print(f"  {sym}: ERROR fetching data: {e}")
+                errors.append(f"{sym}: {e}")
+
+    # Helper to safely parse string -> float
+    def _pf(val) -> float | None:
+        if val is None or val == "":
+            return None
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return None
+
+    for symbol in symbols:
+        if symbol not in prefetched:
+            continue
+        position = portfolio[symbol]
+        fetched = prefetched[symbol]
         m: dict[str, Any] = {}
 
         try:
             # ---- Fetch financial statements ----
-            stmt_data = _jquants_get("/fins/statements", {"code": code})
+            stmt_data = fetched["stmt_data"]
             stmts = stmt_data.get("statements") or []
             if not stmts:
                 print(f"  {symbol}: no statements data")
@@ -828,15 +884,6 @@ def refresh_metrics():
 
             # Sort by disclosed date descending to get most recent first
             stmts.sort(key=lambda s: s.get("DisclosedDate", ""), reverse=True)
-
-            # Helper to safely parse string -> float
-            def _pf(val) -> float | None:
-                if val is None or val == "":
-                    return None
-                try:
-                    return float(val)
-                except (ValueError, TypeError):
-                    return None
 
             # Get the latest annual/full-year statement for result data
             # TypeOfCurrentPeriod: "FY" = full year, "3Q", "2Q", "1Q"
@@ -1000,17 +1047,12 @@ def refresh_metrics():
                 m["eps_cagr_2y"] = round(eps_growth * 100, 1)
 
             # ---- Beta (rolling regression vs TOPIX) ----
-            if topix_returns:
+            if topix_closes_by_date:
                 try:
-                    stock_data = _jquants_get("/equities/bars/daily", {
-                        "code": code,
-                        "from": date_from_1y,
-                        "to": date_to,
-                    })
-                    stock_bars = stock_data.get("data") or stock_data.get("eq_bars_daily") or []
+                    stock_bars = fetched["stock_data"].get("data") or fetched["stock_data"].get("eq_bars_daily") or []
                     if stock_bars:
                         # Build date->close map for the stock
-                        stock_closes_by_date = {}
+                        stock_closes_by_date: dict[str, float] = {}
                         for bar in stock_bars:
                             dt = bar.get("Date", "")
                             c = bar.get("Close") or bar.get("AdjClose") or bar.get("C") or bar.get("AdjC")
@@ -1020,21 +1062,7 @@ def refresh_metrics():
                                 except (ValueError, TypeError):
                                     pass
 
-                        # Build date->close map for TOPIX
-                        topix_closes_by_date = {}
-                        topix_bars_raw = (_jquants_get("/indices/bars/daily/topix", {
-                            "from": date_from_1y, "to": date_to,
-                        }).get("data") or [])
-                        for bar in topix_bars_raw:
-                            dt = bar.get("Date", "")
-                            c = bar.get("Close") or bar.get("C")
-                            if c is not None and dt:
-                                try:
-                                    topix_closes_by_date[dt] = float(c)
-                                except (ValueError, TypeError):
-                                    pass
-
-                        # Align on common dates
+                        # Align on common dates (reuse cached TOPIX data)
                         common_dates = sorted(set(stock_closes_by_date.keys()) & set(topix_closes_by_date.keys()))
                         if len(common_dates) >= 30:
                             s_prices = np.array([stock_closes_by_date[d] for d in common_dates])
