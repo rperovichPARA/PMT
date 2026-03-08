@@ -30,6 +30,8 @@ import java.io.IOException;
 import java.text.NumberFormat;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Main application window for the JavaFX Portfolio.Tool client.
@@ -61,6 +63,9 @@ public class MainWindow {
     private VBox cashPathPanel;
     private boolean cashPathVisible = false;
     // (tradeChartSplit removed – cash path is now in bottomSplit)
+
+    // Default sort flag (set before refreshAll after import)
+    private boolean applyDefaultSort = false;
 
     // Font scaling
     private int fontSize = 12;
@@ -254,30 +259,94 @@ public class MainWindow {
 
         portfolioTable.getColumns().addAll(symbolCol, nameCol, priceCol, pctCol);
 
-        // Metrics columns
-        addMetricCol("PBR", "pbr", 55);
-        addMetricCol("PE LTM", "peLtm", 60);
-        addMetricCol("PE NTM", "peNtm", 60);
-        addMetricCol("PE 24M", "pe24m", 60);
-        addMetricCol("PEGc", "pegC", 55);
-        addMetricCol("PEG n", "pegN", 55);
-        addMetricCol("ROE(l)", "roeL", 60);
-        addMetricCol("ROE NTM", "roeNtm", 65);
-        addMetricCol("b(plow)", "plowback", 55);
-        addMetricCol("b(vol)", "beta", 55);
-        addMetricCol("DivYld", "divYield", 60);
-        addMetricCol("Payout", "payoutRatio", 60);
-        addMetricCol("OPM", "opm", 55);
-        addMetricCol("2Y Sales", "salesCagr2y", 60);
-        addMetricCol("2Y Op", "opCagr2y", 55);
-        addMetricCol("2Y EPS", "epsCagr2y", 55);
+        // Metrics columns: (header, property, width, extractor, higherIsBetter)
+        // Lower is better: PBR, PE*, PEG*, beta, payout
+        // Higher is better: ROE*, plowback, divYield, OPM, growth rates
+        addMetricCol("PBR",      "pbr",          55, PositionData::getPbr,        false);
+        addMetricCol("PE LTM",   "peLtm",        60, PositionData::getPeLtm,      false);
+        addMetricCol("PE NTM",   "peNtm",        60, PositionData::getPeNtm,      false);
+        addMetricCol("PE 24M",   "pe24m",        60, PositionData::getPe24m,      false);
+        addMetricCol("PEGc",     "pegC",         55, PositionData::getPegC,       false);
+        addMetricCol("PEG n",    "pegN",         55, PositionData::getPegN,       false);
+        addMetricCol("ROE(l)",   "roeL",         60, PositionData::getRoeL,       true);
+        addMetricCol("ROE NTM",  "roeNtm",       65, PositionData::getRoeNtm,     true);
+        addMetricCol("b(plow)",  "plowback",     55, PositionData::getPlowback,   true);
+        addMetricCol("b(vol)",   "beta",         55, PositionData::getBeta,       false);
+        addMetricCol("DivYld",   "divYield",     60, PositionData::getDivYield,   true);
+        addMetricCol("Payout",   "payoutRatio",  60, PositionData::getPayoutRatio,false);
+        addMetricCol("OPM",      "opm",          55, PositionData::getOpm,        true);
+        addMetricCol("2Y Sales", "salesCagr2y",  60, PositionData::getSalesCagr2y,true);
+        addMetricCol("2Y Op",    "opCagr2y",     55, PositionData::getOpCagr2y,   true);
+        addMetricCol("2Y EPS",   "epsCagr2y",    55, PositionData::getEpsCagr2y,  true);
     }
 
-    private void addMetricCol(String header, String property, int width) {
+    private void addMetricCol(String header, String property, int width,
+                              Function<PositionData, Double> extractor, boolean higherIsBetter) {
         TableColumn<PositionRow, String> col = new TableColumn<>(header);
         col.setCellValueFactory(new PropertyValueFactory<>(property));
         col.setPrefWidth(width);
         col.setStyle("-fx-alignment: CENTER-RIGHT;");
+
+        col.setCellFactory(column -> new TableCell<>() {
+            @Override
+            protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null || item.isEmpty()) {
+                    setText(null);
+                    setStyle("-fx-alignment: CENTER-RIGHT;");
+                    return;
+                }
+                setText(item);
+
+                // Get raw value for this row
+                PositionRow row = getTableView().getItems().get(getIndex());
+                Double rawValue = extractor.apply(row.getData());
+                if (rawValue == null) {
+                    setStyle("-fx-alignment: CENTER-RIGHT;");
+                    return;
+                }
+
+                // Collect all non-null values in this column
+                List<Double> values = getTableView().getItems().stream()
+                        .map(r -> extractor.apply(r.getData()))
+                        .filter(Objects::nonNull)
+                        .sorted()
+                        .collect(Collectors.toList());
+
+                if (values.size() <= 1) {
+                    setStyle("-fx-alignment: CENTER-RIGHT;");
+                    return;
+                }
+
+                // Compute percentile rank (0 = lowest, 1 = highest)
+                int idx = Collections.binarySearch(values, rawValue);
+                if (idx < 0) idx = -(idx + 1);
+                // Handle duplicate values: find first occurrence
+                while (idx > 0 && values.get(idx - 1).equals(rawValue)) idx--;
+                double rank = (double) idx / (values.size() - 1);
+
+                // Convert rank to attractiveness (0 = worst, 1 = best)
+                double attractiveness = higherIsBetter ? rank : (1.0 - rank);
+
+                // Interpolate color: 0 = pink (#E6B8B7), 0.5 = white, 1 = green (#C4D79B)
+                int r, g, b;
+                if (attractiveness >= 0.5) {
+                    double t = (attractiveness - 0.5) * 2.0;
+                    r = (int) (255 - t * (255 - 196));
+                    g = (int) (255 - t * (255 - 215));
+                    b = (int) (255 - t * (255 - 155));
+                } else {
+                    double t = attractiveness * 2.0;
+                    r = (int) (230 + t * (255 - 230));
+                    g = (int) (184 + t * (255 - 184));
+                    b = (int) (183 + t * (255 - 183));
+                }
+
+                String bgColor = String.format("#%02X%02X%02X", r, g, b);
+                setStyle("-fx-alignment: CENTER-RIGHT; -fx-background-color: " + bgColor + ";");
+            }
+        });
+
         portfolioTable.getColumns().add(col);
     }
 
@@ -588,8 +657,21 @@ public class MainWindow {
             updateFilingsTable(filings);
             updateSummary(summary);
 
-            // Restore sort order
-            if (!sortColIndices.isEmpty()) {
+            // Restore sort order or apply default sort after import
+            if (applyDefaultSort) {
+                applyDefaultSort = false;
+                // Sort by first fund's "Curr." column descending (fund columns are right after fixed)
+                int fundGroupIdx = NUM_FIXED_COLUMNS;
+                if (fundGroupIdx < portfolioTable.getColumns().size()) {
+                    TableColumn<PositionRow, ?> fundGroup = portfolioTable.getColumns().get(fundGroupIdx);
+                    if (!fundGroup.getColumns().isEmpty()) {
+                        TableColumn<PositionRow, ?> currCol = fundGroup.getColumns().get(0);
+                        currCol.setSortType(TableColumn.SortType.DESCENDING);
+                        portfolioTable.getSortOrder().setAll(currCol);
+                        portfolioTable.sort();
+                    }
+                }
+            } else if (!sortColIndices.isEmpty()) {
                 List<TableColumn<PositionRow, ?>> newSortOrder = new ArrayList<>();
                 for (int i = 0; i < sortColIndices.size(); i++) {
                     int idx = sortColIndices.get(i);
@@ -631,6 +713,7 @@ public class MainWindow {
         ProgressDialog progress = showProgressDialog("Importing Portfolio",
                 "Reading and processing " + file.getName() + "...");
         progress.show();
+        applyDefaultSort = true;
         runAsync(() -> api.importPortfolio(file), msg -> {
             progress.close();
             setStatus(msg);
@@ -1121,6 +1204,8 @@ public class MainWindow {
             this.data = data;
             this.fundNames = fundNames;
         }
+
+        public PositionData getData() { return data; }
 
         public String getSymbol() { return data.getSymbol(); }
         public String getName() { return data.getName(); }
