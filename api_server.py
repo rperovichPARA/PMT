@@ -92,7 +92,7 @@ _state: dict[str, Any] = {
     "filings": {},             # dict[str, FilingRecord]
     "proposed_executions": {}, # dict[str, ProposedExecution]
     "use_yfinance": False,
-    "metrics": {},             # dict[str, dict] – per-symbol metrics from /fins/statements
+    "metrics": {},             # dict[str, dict] – per-symbol metrics from /fins/summary
 }
 
 
@@ -791,7 +791,7 @@ def refresh_prices():
 
 @app.post("/api/metrics/refresh")
 def refresh_metrics():
-    """Refresh fundamental metrics using J-Quants V2 /fins/statements and /indices/bars/daily/topix."""
+    """Refresh fundamental metrics using J-Quants V2 /fins/summary and /indices/bars/daily/topix."""
     import numpy as np
 
     portfolio = _state["portfolio"]
@@ -838,7 +838,7 @@ def refresh_metrics():
     # ---- Parallel fetch: statements + stock bars for all symbols ----
     def _fetch_symbol_data(symbol: str) -> dict:
         code = f"{symbol}0"
-        stmt_data = _jquants_get("/fins/statements", {"code": code})
+        stmt_data = _jquants_get("/fins/summary", {"code": code})
         stock_data = _jquants_get("/equities/bars/daily", {
             "code": code,
             "from": date_from_1y,
@@ -876,7 +876,7 @@ def refresh_metrics():
         try:
             # ---- Fetch financial statements ----
             stmt_data = fetched["stmt_data"]
-            stmts = stmt_data.get("statements") or []
+            stmts = stmt_data.get("fins_summary") or stmt_data.get("statements") or []
             if not stmts:
                 print(f"  {symbol}: no statements data")
                 errors.append(f"{symbol}: no statements")
