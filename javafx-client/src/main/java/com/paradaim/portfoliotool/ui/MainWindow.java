@@ -205,13 +205,16 @@ public class MainWindow {
         Button filingsBtn = new Button("Toggle Filings");
         filingsBtn.setOnAction(e -> toggleFilings());
 
+        Button importFilingsBtn = new Button("Import Filings");
+        importFilingsBtn.setOnAction(e -> importFilings());
+
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
         summaryLabel = new Label("No portfolio loaded");
         summaryLabel.setStyle("-fx-font-style: italic;");
 
-        toolbar.getChildren().addAll(importBtn, tradeBtn, addBtn, removeBtn, refreshBtn, refreshMetricsBtn, filingsBtn, spacer, summaryLabel);
+        toolbar.getChildren().addAll(importBtn, tradeBtn, addBtn, removeBtn, refreshBtn, refreshMetricsBtn, filingsBtn, importFilingsBtn, spacer, summaryLabel);
 
         // Portfolio table
         portfolioTable = new TableView<>(portfolioData);
@@ -348,8 +351,8 @@ public class MainWindow {
     }
 
     private void rebuildFundColumns() {
-        // Remove old fund columns (inserted between fixed and metric columns)
-        // Fund columns sit at indices NUM_FIXED_COLUMNS .. NUM_FIXED_COLUMNS + oldFundCount - 1
+        // Remove old fund columns (they sit between fixed columns and metric columns)
+        // Total columns = fixed + fund + metric; fund columns start at NUM_FIXED_COLUMNS
         int totalExpected = NUM_FIXED_COLUMNS + NUM_METRIC_COLUMNS;
         while (portfolioTable.getColumns().size() > totalExpected) {
             portfolioTable.getColumns().remove(NUM_FIXED_COLUMNS);
@@ -407,7 +410,7 @@ public class MainWindow {
             });
 
             fundGroup.getColumns().addAll(currCol, newCol);
-            // Insert fund columns right after the fixed columns (before metrics)
+            // Insert fund columns right after fixed columns (before metrics)
             portfolioTable.getColumns().add(NUM_FIXED_COLUMNS + i, fundGroup);
         }
     }
