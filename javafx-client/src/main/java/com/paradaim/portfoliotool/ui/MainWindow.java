@@ -946,7 +946,7 @@ public class MainWindow {
         chart.setMaxHeight(Double.MAX_VALUE);
         chart.setCreateSymbols(false);
         chart.setAnimated(false);
-        chart.setLegendVisible(true);
+        chart.setLegendVisible(false);
         VBox.setVgrow(chart, Priority.ALWAYS);
 
         // Aggregate cash position line (cumulative, reflects all buys and sells)
@@ -1014,14 +1014,15 @@ public class MainWindow {
     private void updateTradesTable(List<ExecutionData> trades) {
         tradesData.setAll(trades);
 
-        // Update net total
-        double net = trades.stream().mapToDouble(ExecutionData::getTradeValueSigned).sum();
+        // Update net total (cash-flow perspective: buys = cash out = negative, sells = cash in = positive)
+        double netSigned = trades.stream().mapToDouble(ExecutionData::getTradeValueSigned).sum();
+        double netCash = -netSigned;  // flip sign: buys (positive signed) = cash outflow (negative)
         Label netLabel = (Label) root.lookup("#netTotalLabel");
         if (netLabel != null) {
-            netLabel.setText(String.format("Net Total: %s USD", formatNumber(net)));
-            if (net > 0) {
+            netLabel.setText(String.format("Net Total: %s USD", formatNumber(netCash)));
+            if (netCash > 0) {
                 netLabel.setStyle("-fx-font-weight: bold; -fx-text-fill: #008800;");
-            } else if (net < 0) {
+            } else if (netCash < 0) {
                 netLabel.setStyle("-fx-font-weight: bold; -fx-text-fill: #cc0000;");
             } else {
                 netLabel.setStyle("-fx-font-weight: bold;");
