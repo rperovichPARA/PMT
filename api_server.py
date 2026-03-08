@@ -866,6 +866,35 @@ def refresh_metrics():
         except (ValueError, TypeError):
             return None
 
+    # V1 -> V2 field name mapping (V2 uses abbreviated names)
+    _V2_FIELDS = {
+        "DisclosedDate": "DiscDate",
+        "TypeOfCurrentPeriod": "CurPerType",
+        "CurrentPeriodEndDate": "CurPerEn",
+        "CurrentFiscalYearEndDate": "CurFYEn",
+        "BookValuePerShare": "BPS",
+        "EarningsPerShare": "EPS",
+        "ForecastEarningsPerShare": "FEPS",
+        "NextYearForecastEarningsPerShare2ndQuarter": "NxFEPS2Q",
+        "NextYearForecastProfit": "NxFNp",
+        "Profit": "NP",
+        "Equity": "Eq",
+        "ForecastProfit": "FNP",
+        "ResultPayoutRatioAnnual": "PayoutRatioAnn",
+        "ResultDividendPerShareAnnual": "DivAnn",
+        "OperatingProfit": "OP",
+        "NetSales": "Sales",
+    }
+
+    def _fg(record: dict, v1_key: str):
+        """Get field from record trying V2 abbreviated name first, then V1."""
+        v2_key = _V2_FIELDS.get(v1_key)
+        if v2_key:
+            val = record.get(v2_key)
+            if val is not None:
+                return val
+        return record.get(v1_key)
+
     for symbol in symbols:
         if symbol not in prefetched:
             continue
@@ -876,31 +905,29 @@ def refresh_metrics():
         try:
             # ---- Fetch financial statements ----
             stmt_data = fetched["stmt_data"]
-            print(f"  {symbol}: stmt_data keys={list(stmt_data.keys())}")
-            stmts = stmt_data.get("fins_summary") or stmt_data.get("statements") or []
+            stmts = stmt_data.get("data") or stmt_data.get("fins_summary") or stmt_data.get("statements") or []
             if not stmts:
                 print(f"  {symbol}: no statements data")
                 errors.append(f"{symbol}: no statements")
                 continue
 
             # Sort by disclosed date descending to get most recent first
-            stmts.sort(key=lambda s: s.get("DisclosedDate", ""), reverse=True)
+            stmts.sort(key=lambda s: _fg(s, "DisclosedDate") or "", reverse=True)
 
             # Get the latest annual/full-year statement for result data
-            # TypeOfCurrentPeriod: "FY" = full year, "3Q", "2Q", "1Q"
             latest_stmt = stmts[0]  # most recent disclosure
 
             # Find latest FY statement for result metrics
             fy_stmt = None
             for s in stmts:
-                if s.get("TypeOfCurrentPeriod") == "FY":
+                if _fg(s, "TypeOfCurrentPeriod") == "FY":
                     fy_stmt = s
                     break
 
             # Use latest statement that has forecast data
             forecast_stmt = None
             for s in stmts:
-                if _pf(s.get("ForecastEarningsPerShare")) is not None:
+                if _pf(_fg(s, "ForecastEarningsPerShare")) is not None:
                     forecast_stmt = s
                     break
 
@@ -909,22 +936,21 @@ def refresh_metrics():
             # ---- BookValuePerShare -> PBR ----
             bvps = None
             for s in stmts:
-                bvps = _pf(s.get("BookValuePerShare"))
+                bvps = _pf(_fg(s, "BookValuePerShare"))
                 if bvps is not None:
                     break
             if bvps and bvps > 0 and price > 0:
                 m["pbr"] = round(price / bvps, 2)
 
             # ---- PE LTM: trailing 4 quarters of EPS ----
-            # Collect quarterly EPS values (most recent 4 quarters)
             quarterly_eps = []
             seen_periods = set()
             for s in stmts:
-                period_end = s.get("CurrentPeriodEndDate", "")
-                period_type = s.get("TypeOfCurrentPeriod", "")
+                period_end = _fg(s, "CurrentPeriodEndDate") or ""
+                period_type = _fg(s, "TypeOfCurrentPeriod") or ""
                 if period_end in seen_periods:
                     continue
-                eps_val = _pf(s.get("EarningsPerShare"))
+                eps_val = _pf(_fg(s, "EarningsPerShare"))
                 if eps_val is not None and period_type in ("1Q", "2Q", "3Q", "FY"):
                     quarterly_eps.append({"type": period_type, "eps": eps_val,
                                           "end": period_end})
@@ -932,32 +958,28 @@ def refresh_metrics():
                 if len(quarterly_eps) >= 8:
                     break
 
-            # For LTM EPS, take the most recent FY EPS or sum approach
-            # Simplest: if we have FY, use it. Otherwise cumulate.
             ltm_eps = None
             if fy_stmt:
-                ltm_eps = _pf(fy_stmt.get("EarningsPerShare"))
+                ltm_eps = _pf(_fg(fy_stmt, "EarningsPerShare"))
             if ltm_eps and ltm_eps > 0 and price > 0:
                 m["pe_ltm"] = round(price / ltm_eps, 1)
 
             # ---- PE NTM: ForecastEarningsPerShare (current year) ----
             forecast_eps = None
             if forecast_stmt:
-                forecast_eps = _pf(forecast_stmt.get("ForecastEarningsPerShare"))
+                forecast_eps = _pf(_fg(forecast_stmt, "ForecastEarningsPerShare"))
             if forecast_eps and forecast_eps > 0 and price > 0:
                 m["pe_ntm"] = round(price / forecast_eps, 1)
 
             # ---- PE 24M: NextYearForecastEarningsPerShare ----
-            # Try NextYearForecastEarningsPerShare2ndQuarter or derive from NextYearForecastProfit / shares
             next_yr_eps = None
             for s in stmts:
-                next_yr_eps = _pf(s.get("NextYearForecastEarningsPerShare2ndQuarter"))
+                next_yr_eps = _pf(_fg(s, "NextYearForecastEarningsPerShare2ndQuarter"))
                 if next_yr_eps is not None:
                     break
             if next_yr_eps is None:
-                # Derive from NextYearForecastProfit / outstanding shares
                 for s in stmts:
-                    nyf_profit = _pf(s.get("NextYearForecastProfit"))
+                    nyf_profit = _pf(_fg(s, "NextYearForecastProfit"))
                     if nyf_profit is not None and position.os_shares > 0:
                         next_yr_eps = nyf_profit / position.os_shares
                         break
@@ -965,8 +987,7 @@ def refresh_metrics():
                 m["pe_24m"] = round(price / next_yr_eps, 1)
 
             # ---- PEGc: PE NTM / EPS growth rate (historical) ----
-            # Compute EPS CAGR from historical data for PEGc
-            historical_eps = _collect_annual_values(stmts, "EarningsPerShare", _pf)
+            historical_eps = _collect_annual_values(stmts, "EarningsPerShare", _pf, _fg)
             eps_growth = _compute_cagr(historical_eps)
             if m.get("pe_ntm") and eps_growth and eps_growth > 0:
                 m["peg_c"] = round(m["pe_ntm"] / (eps_growth * 100), 2)
@@ -982,9 +1003,9 @@ def refresh_metrics():
             equity = None
             for s in stmts:
                 if profit is None:
-                    profit = _pf(s.get("Profit"))
+                    profit = _pf(_fg(s, "Profit"))
                 if equity is None:
-                    equity = _pf(s.get("Equity"))
+                    equity = _pf(_fg(s, "Equity"))
                 if profit is not None and equity is not None:
                     break
             if profit is not None and equity and equity > 0:
@@ -993,18 +1014,17 @@ def refresh_metrics():
             # ---- ROE NTM: ForecastProfit / Equity ----
             forecast_profit = None
             if forecast_stmt:
-                forecast_profit = _pf(forecast_stmt.get("ForecastProfit"))
+                forecast_profit = _pf(_fg(forecast_stmt, "ForecastProfit"))
             if forecast_profit is not None and equity and equity > 0:
                 m["roe_ntm"] = round(forecast_profit / equity * 100, 1)
 
             # ---- Plowback: 1 - ResultPayoutRatioAnnual ----
             payout = None
             for s in stmts:
-                payout = _pf(s.get("ResultPayoutRatioAnnual"))
+                payout = _pf(_fg(s, "ResultPayoutRatioAnnual"))
                 if payout is not None:
                     break
             if payout is not None:
-                # J-Quants returns payout as percentage (e.g. 30.5 for 30.5%)
                 payout_dec = payout / 100.0 if payout > 1.0 else payout
                 m["plowback"] = round(1.0 - payout_dec, 3)
                 m["payout_ratio"] = round(payout_dec * 100, 1)
@@ -1012,7 +1032,7 @@ def refresh_metrics():
             # ---- Div Yield: ResultDividendPerShareAnnual / Price ----
             div_annual = None
             for s in stmts:
-                div_annual = _pf(s.get("ResultDividendPerShareAnnual"))
+                div_annual = _pf(_fg(s, "ResultDividendPerShareAnnual"))
                 if div_annual is not None:
                     break
             if div_annual is not None and price > 0:
@@ -1023,22 +1043,22 @@ def refresh_metrics():
             net_sales = None
             for s in stmts:
                 if op_profit is None:
-                    op_profit = _pf(s.get("OperatingProfit"))
+                    op_profit = _pf(_fg(s, "OperatingProfit"))
                 if net_sales is None:
-                    net_sales = _pf(s.get("NetSales"))
+                    net_sales = _pf(_fg(s, "NetSales"))
                 if op_profit is not None and net_sales is not None:
                     break
             if op_profit is not None and net_sales and net_sales > 0:
                 m["opm"] = round(op_profit / net_sales * 100, 1)
 
             # ---- 2Y Sales CAGR ----
-            historical_sales = _collect_annual_values(stmts, "NetSales", _pf)
+            historical_sales = _collect_annual_values(stmts, "NetSales", _pf, _fg)
             sales_cagr = _compute_cagr(historical_sales)
             if sales_cagr is not None:
                 m["sales_cagr_2y"] = round(sales_cagr * 100, 1)
 
             # ---- 2Y Op CAGR ----
-            historical_op = _collect_annual_values(stmts, "OperatingProfit", _pf)
+            historical_op = _collect_annual_values(stmts, "OperatingProfit", _pf, _fg)
             op_cagr = _compute_cagr(historical_op)
             if op_cagr is not None:
                 m["op_cagr_2y"] = round(op_cagr * 100, 1)
@@ -1095,18 +1115,19 @@ def refresh_metrics():
 
 
 def _collect_annual_values(
-    stmts: list[dict], field: str, parse_fn
+    stmts: list[dict], field: str, parse_fn, field_getter=None
 ) -> list[tuple[str, float]]:
     """Collect (fiscal_year_end, value) pairs from FY statements for CAGR calculation."""
+    fg = field_getter or (lambda rec, key: rec.get(key))
     values = []
     seen_years = set()
     for s in stmts:
-        if s.get("TypeOfCurrentPeriod") != "FY":
+        if (fg(s, "TypeOfCurrentPeriod") or s.get("TypeOfCurrentPeriod")) != "FY":
             continue
-        fy_end = s.get("CurrentFiscalYearEndDate", "")
+        fy_end = fg(s, "CurrentFiscalYearEndDate") or s.get("CurrentFiscalYearEndDate", "")
         if fy_end in seen_years:
             continue
-        val = parse_fn(s.get(field))
+        val = parse_fn(fg(s, field))
         if val is not None and val > 0:
             values.append((fy_end, val))
             seen_years.add(fy_end)
