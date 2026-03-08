@@ -200,13 +200,16 @@ public class MainWindow {
         Button filingsBtn = new Button("Toggle Filings");
         filingsBtn.setOnAction(e -> toggleFilings());
 
+        Button importFilingsBtn = new Button("Import Filings");
+        importFilingsBtn.setOnAction(e -> importFilings());
+
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
         summaryLabel = new Label("No portfolio loaded");
         summaryLabel.setStyle("-fx-font-style: italic;");
 
-        toolbar.getChildren().addAll(importBtn, tradeBtn, addBtn, removeBtn, refreshBtn, refreshMetricsBtn, filingsBtn, spacer, summaryLabel);
+        toolbar.getChildren().addAll(importBtn, tradeBtn, addBtn, removeBtn, refreshBtn, refreshMetricsBtn, filingsBtn, importFilingsBtn, spacer, summaryLabel);
 
         // Portfolio table
         portfolioTable = new TableView<>(portfolioData);
