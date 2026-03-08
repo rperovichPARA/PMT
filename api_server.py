@@ -876,6 +876,7 @@ def refresh_metrics():
         try:
             # ---- Fetch financial statements ----
             stmt_data = fetched["stmt_data"]
+            print(f"  {symbol}: stmt_data keys={list(stmt_data.keys())}")
             stmts = stmt_data.get("fins_summary") or stmt_data.get("statements") or []
             if not stmts:
                 print(f"  {symbol}: no statements data")
