@@ -905,14 +905,23 @@ def refresh_metrics():
 
             # ---- Parse /fins/summary for FEPS, NxFEPS, FNP etc. ----
             summary_data = fetched.get("summary_data", {})
-            summary_records = summary_data.get("data") or summary_data.get("fs_summary") or []
-            # Sort by DiscDate descending, pick most recent
-            summary_records.sort(key=lambda r: r.get("DiscDate", ""), reverse=True)
-            summary = summary_records[0] if summary_records else {}
+            # Try multiple possible response wrapper keys
+            summary_records = (
+                summary_data.get("data")
+                or summary_data.get("fs_summary")
+                or summary_data.get("statements")
+                or summary_data.get("fins_summary")
+                or []
+            )
+            if not summary_records and isinstance(summary_data, list):
+                summary_records = summary_data  # response might be a bare list
 
-            # Helper to extract a float from the summary record
-            def _sfloat(key: str) -> float | None:
-                v = summary.get(key)
+            # Sort by DiscDate descending (most recent first)
+            summary_records.sort(key=lambda r: r.get("DiscDate", ""), reverse=True)
+
+            # Helper to extract a float from a record
+            def _sfloat(rec: dict, key: str) -> float | None:
+                v = rec.get(key)
                 if v is None:
                     return None
                 try:
@@ -920,11 +929,55 @@ def refresh_metrics():
                 except (ValueError, TypeError):
                     return None
 
-            summary_feps = _sfloat("FEPS")          # Forecast EPS (NTM)
-            summary_nxfeps = _sfloat("NxFEPS")      # Next-year forecast EPS (24M)
-            summary_fnp = _sfloat("FNP")             # Forecast net profit
-            summary_nxfnp = _sfloat("NxFNp")         # Next-year forecast net profit
-            summary_eq = _sfloat("Eq")                # Equity from summary
+            # Scan records to find the most recent one that has FEPS populated
+            # (not all filings include forecasts; quarterly updates usually do)
+            summary_feps: float | None = None
+            summary_nxfeps: float | None = None
+            summary_fnp: float | None = None
+            summary_nxfnp: float | None = None
+            summary_eq: float | None = None
+            summary_eps: float | None = None
+            summary_bps: float | None = None
+            summary_roe: float | None = None
+
+            for srec in summary_records:
+                # Pick first record that has FEPS for forward PE
+                if summary_feps is None:
+                    v = _sfloat(srec, "FEPS")
+                    if v is not None and v > 0:
+                        summary_feps = v
+                        # Grab related fields from same record for consistency
+                        if summary_fnp is None:
+                            summary_fnp = _sfloat(srec, "FNP")
+                        if summary_nxfeps is None:
+                            summary_nxfeps = _sfloat(srec, "NxFEPS")
+                        if summary_nxfnp is None:
+                            summary_nxfnp = _sfloat(srec, "NxFNp")
+                # Pick equity from first record that has it
+                if summary_eq is None:
+                    summary_eq = _sfloat(srec, "Eq")
+                # Pick EPS/BPS/ROE as fallbacks
+                if summary_eps is None:
+                    summary_eps = _sfloat(srec, "EPS")
+                if summary_bps is None:
+                    summary_bps = _sfloat(srec, "BPS")
+                if summary_roe is None:
+                    summary_roe = _sfloat(srec, "ROE")
+                # Also scan for NxFEPS in other records if not found yet
+                if summary_nxfeps is None:
+                    v = _sfloat(srec, "NxFEPS")
+                    if v is not None and v > 0:
+                        summary_nxfeps = v
+                        if summary_nxfnp is None:
+                            summary_nxfnp = _sfloat(srec, "NxFNp")
+
+            if summary_records:
+                print(f"  {symbol}: summary has {len(summary_records)} records, "
+                      f"keys={list(summary_records[0].keys())[:10]}..., "
+                      f"FEPS={summary_feps}, NxFEPS={summary_nxfeps}, "
+                      f"FNP={summary_fnp}, EPS={summary_eps}, ROE={summary_roe}")
+            else:
+                print(f"  {symbol}: NO summary records (raw keys={list(summary_data.keys()) if isinstance(summary_data, dict) else 'list'})")
 
             # ---- PBR: Price / (Equity / Shares) ----
             equity = None
@@ -938,11 +991,13 @@ def refresh_metrics():
                 bvps = equity / os_shares
                 m["pbr"] = round(price / bvps, 2)
 
-            # ---- PE LTM: Price / (Net Income FY / Shares) ----
+            # ---- PE LTM: Price / (Net Income FY / Shares), fallback to summary EPS ----
             net_income_fy = fy_record.get("net_income") if fy_record else None
             if net_income_fy and net_income_fy > 0 and os_shares > 0 and price > 0:
                 ltm_eps = net_income_fy / os_shares
                 m["pe_ltm"] = round(price / ltm_eps, 1)
+            elif summary_eps and summary_eps > 0 and price > 0:
+                m["pe_ltm"] = round(price / summary_eps, 1)
 
             # ---- PE NTM: use /fins/summary FEPS first, fall back to details forecast ----
             forecast_ni = None
@@ -973,10 +1028,14 @@ def refresh_metrics():
             historical_eps_vals = _collect_annual_values_details(parsed_records, "net_income", os_shares)
             eps_growth = _compute_cagr(historical_eps_vals)
 
-            # ---- PEGc: PE LTM / EPS CAGR (historical) ----
+            # ---- PEGc: PE NTM / EPS growth ----
+            # Prefer historical CAGR; fall back to summary EPS→FEPS 1Y growth
             pe_for_peg = m.get("pe_ntm") or m.get("pe_ltm")
-            if pe_for_peg and eps_growth and eps_growth > 0:
-                m["peg_c"] = round(pe_for_peg / (eps_growth * 100), 2)
+            effective_eps_growth = eps_growth
+            if effective_eps_growth is None and summary_eps and summary_feps and summary_eps > 0:
+                effective_eps_growth = (summary_feps - summary_eps) / abs(summary_eps)
+            if pe_for_peg and effective_eps_growth and effective_eps_growth > 0:
+                m["peg_c"] = round(pe_for_peg / (effective_eps_growth * 100), 2)
 
             # ---- PEG n: PE 24M / next year EPS growth ----
             # Prefer summary FEPS→NxFEPS growth, fall back to details forecast_ni→next_yr_ni
@@ -1000,11 +1059,16 @@ def refresh_metrics():
                     break
             if ni_for_roe is not None and equity and equity > 0:
                 m["roe_l"] = round(ni_for_roe / equity * 100, 1)
+            elif summary_roe is not None:
+                m["roe_l"] = round(summary_roe, 1)
 
             # ---- ROE NTM: Forecast NI / Equity (prefer summary FNP) ----
             roe_ntm_ni = summary_fnp if summary_fnp is not None else forecast_ni
             if roe_ntm_ni is not None and equity and equity > 0:
                 m["roe_ntm"] = round(roe_ntm_ni / equity * 100, 1)
+            elif summary_roe is not None and summary_feps and summary_eps and summary_eps > 0:
+                # Approximate: scale ROE by forecast/actual EPS ratio
+                m["roe_ntm"] = round(summary_roe * (summary_feps / summary_eps), 1)
 
             # ---- Plowback & Payout: from dividends paid / net income ----
             dividends_paid = None
@@ -1082,7 +1146,9 @@ def refresh_metrics():
 
             _state["metrics"][symbol] = m
             updated += 1
-            print(f"  {symbol}: {len(m)} metrics computed")
+            missing = [k for k in ["pe_ntm", "pe_24m", "peg_c", "peg_n", "roe_ntm"] if k not in m]
+            summary_info = f"FEPS={summary_feps} NxFEPS={summary_nxfeps} FNP={summary_fnp}"
+            print(f"  {symbol}: {len(m)} metrics | summary: {summary_info} | missing: {missing or 'none'}")
 
         except Exception as e:
             print(f"  {symbol}: ERROR {e}")
@@ -1349,6 +1415,35 @@ def debug_jquants_details(symbol: str):
             result["fs_key_count"] = len(fs)
             result["parsed_values"] = _extract_fs_values(fs)
             result["period_type"] = _parse_period_type(latest.get("DocType", ""))
+        return result
+    except Exception as e:
+        return {"code": code, "error": str(e)}
+
+
+@app.get("/api/debug/jquants/summary/{symbol}")
+def debug_jquants_summary(symbol: str):
+    """Inspect raw /fins/summary response for a single stock."""
+    code = f"{symbol}0"
+    try:
+        data = _jquants_get("/fins/summary", {"code": code})
+        records = data.get("data") or data.get("fs_summary") or []
+        records.sort(key=lambda r: r.get("DiscDate", ""), reverse=True)
+        result = {
+            "code": code,
+            "raw_keys": list(data.keys()),
+            "num_records": len(records),
+        }
+        if records:
+            latest = records[0]
+            result["latest_record"] = latest
+            result["all_field_names"] = list(latest.keys())
+            # Show forecast-related fields specifically
+            forecast_fields = {}
+            for k, v in latest.items():
+                kl = k.lower()
+                if any(x in kl for x in ["eps", "fep", "nxf", "fnp", "roe", "fore", "bps", "div", "payout"]):
+                    forecast_fields[k] = v
+            result["forecast_related_fields"] = forecast_fields
         return result
     except Exception as e:
         return {"code": code, "error": str(e)}
