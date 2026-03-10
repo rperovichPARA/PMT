@@ -752,7 +752,21 @@ public class MainWindow {
                 .findFirst().orElse(null);
         if (posData == null) return;
 
-        TradeDialog dialog = new TradeDialog(stage, api, posData, fundNames);
+        // Look up filing data for this symbol
+        FilingData filingData = null;
+        try {
+            List<FilingData> filings = api.getFilings();
+            for (FilingData fd : filings) {
+                if (posData.getSymbol().equals(fd.getSymbol())) {
+                    filingData = fd;
+                    break;
+                }
+            }
+        } catch (Exception ignored) {
+            // Filing data is optional – proceed without it
+        }
+
+        TradeDialog dialog = new TradeDialog(stage, api, posData, fundNames, filingData);
         dialog.showAndWait();
         if (dialog.isSubmitted()) {
             refreshAll();
