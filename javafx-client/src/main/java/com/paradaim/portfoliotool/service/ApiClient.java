@@ -84,6 +84,13 @@ public class ApiClient {
     public String addPosition(String symbol, String name, double price,
                               boolean isCash, double adv, String currency,
                               double osShares, Map<String, Double> fundQuantities) throws IOException {
+        return addPosition(symbol, name, price, isCash, adv, currency, osShares, fundQuantities, null, false);
+    }
+
+    public String addPosition(String symbol, String name, double price,
+                              boolean isCash, double adv, String currency,
+                              double osShares, Map<String, Double> fundQuantities,
+                              Map<String, Double> fundRelWeights, boolean isNewAddition) throws IOException {
         var payload = mapper.createObjectNode();
         payload.put("symbol", symbol);
         payload.put("name", name);
@@ -94,6 +101,11 @@ public class ApiClient {
         payload.put("os_shares", osShares);
         var fqNode = payload.putObject("fund_quantities");
         fundQuantities.forEach(fqNode::put);
+        if (fundRelWeights != null && !fundRelWeights.isEmpty()) {
+            var rwNode = payload.putObject("fund_rel_weights");
+            fundRelWeights.forEach(rwNode::put);
+        }
+        payload.put("is_new_addition", isNewAddition);
 
         return postJson("/api/portfolio/position", payload.toString());
     }
@@ -216,6 +228,12 @@ public class ApiClient {
 
     public List<FilingData> getFilings() throws IOException {
         return getList("/api/filings", new TypeReference<>() {});
+    }
+
+    // -- Stock Lookup ---------------------------------------------------------
+
+    public StockLookupResult stockLookup(String symbol) throws IOException {
+        return get("/api/stock/lookup/" + symbol, StockLookupResult.class);
     }
 
     // -- Prices ---------------------------------------------------------------
