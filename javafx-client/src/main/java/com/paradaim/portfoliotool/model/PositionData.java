@@ -22,6 +22,10 @@ public class PositionData {
     @JsonProperty("total_pct_of_company")
     private double totalPctOfCompany;
     private Map<String, FundPositionData> funds;
+    @JsonProperty("inception_date")
+    private String inceptionDate;
+    @JsonProperty("age_years")
+    private Double ageYears;
 
     // Metrics fields
     private Double pbr;
@@ -54,6 +58,8 @@ public class PositionData {
     private Double epsCagr2y;
 
     // Returns
+    @JsonProperty("ret_incep")
+    private Double retIncep;
     @JsonProperty("ret_1d")
     private Double ret1d;
     @JsonProperty("ret_1w")
@@ -103,6 +109,11 @@ public class PositionData {
     public Map<String, FundPositionData> getFunds() { return funds; }
     public void setFunds(Map<String, FundPositionData> v) { this.funds = v; }
 
+    public String getInceptionDate() { return inceptionDate; }
+    public void setInceptionDate(String v) { this.inceptionDate = v; }
+    public Double getAgeYears() { return ageYears; }
+    public void setAgeYears(Double v) { this.ageYears = v; }
+
     public Double getPbr() { return pbr; }
     public void setPbr(Double v) { this.pbr = v; }
     public Double getPeLtm() { return peLtm; }
@@ -136,6 +147,8 @@ public class PositionData {
     public Double getEpsCagr2y() { return epsCagr2y; }
     public void setEpsCagr2y(Double v) { this.epsCagr2y = v; }
 
+    public Double getRetIncep() { return retIncep; }
+    public void setRetIncep(Double v) { this.retIncep = v; }
     public Double getRet1d() { return ret1d; }
     public void setRet1d(Double v) { this.ret1d = v; }
     public Double getRet1w() { return ret1w; }

@@ -252,8 +252,8 @@ public class MainWindow {
         return panel;
     }
 
-    private static final int NUM_FIXED_COLUMNS = 4;
-    private static final int NUM_METRIC_COLUMNS = 25; // 16 metrics + 9 returns
+    private static final int NUM_FIXED_COLUMNS = 5; // Symbol, Name, Price, % of Company, Age
+    private static final int NUM_METRIC_COLUMNS = 26; // 16 metrics + 10 returns (incl. inception)
 
     private void buildPortfolioColumns() {
         portfolioTable.getColumns().clear();
@@ -278,7 +278,13 @@ public class MainWindow {
         pctCol.setStyle("-fx-alignment: CENTER-RIGHT;");
         pctCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
-        portfolioTable.getColumns().addAll(symbolCol, nameCol, priceCol, pctCol);
+        TableColumn<PositionRow, String> ageCol = new TableColumn<>("Age (yr)");
+        ageCol.setCellValueFactory(new PropertyValueFactory<>("ageDisplay"));
+        ageCol.setPrefWidth(60);
+        ageCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+        ageCol.setComparator(NUMERIC_STRING_COMPARATOR);
+
+        portfolioTable.getColumns().addAll(symbolCol, nameCol, priceCol, pctCol, ageCol);
 
         // Metrics columns: (header, property, width, extractor, higherIsBetter)
         // Lower is better: PBR, PE*, PEG*, beta, payout
@@ -301,6 +307,7 @@ public class MainWindow {
         addMetricCol("2Y EPS",   "epsCagr2y",    55, PositionData::getEpsCagr2y,  true);
 
         // Return columns
+        addReturnCol("Incep", "retIncep", 55, PositionData::getRetIncep);
         addReturnCol("1D",   "ret1d",   50, PositionData::getRet1d);
         addReturnCol("1W",   "ret1w",   50, PositionData::getRet1w);
         addReturnCol("1M",   "ret1m",   50, PositionData::getRet1m);
@@ -1372,6 +1379,11 @@ public class MainWindow {
             return String.format("%.2f%%", data.getTotalPctOfCompany() * 100);
         }
 
+        public String getAgeDisplay() {
+            Double age = data.getAgeYears();
+            return age != null ? String.format("%.1f", age) : "";
+        }
+
         public String getFundRelWeight(int fundIdx) {
             if (fundIdx >= fundNames.size()) return "";
             String fundName = fundNames.get(fundIdx);
@@ -1412,6 +1424,7 @@ public class MainWindow {
         public String getEpsCagr2y() { return fmtOpt(data.getEpsCagr2y(), "%.1f%%"); }
 
         // Returns accessors
+        public String getRetIncep() { return fmtOpt(data.getRetIncep(), "%.1f%%"); }
         public String getRet1d() { return fmtOpt(data.getRet1d(), "%.2f%%"); }
         public String getRet1w() { return fmtOpt(data.getRet1w(), "%.2f%%"); }
         public String getRet1m() { return fmtOpt(data.getRet1m(), "%.1f%%"); }

@@ -60,6 +60,7 @@ class Position:
     adv_10pct: float = 0.0
     currency: str = "JPY"
     os_shares: float = 0.0
+    inception_date: str = ""  # m/d/yyyy from import, stored as ISO yyyy-mm-dd
     funds: dict[str, FundPosition] = field(default_factory=dict)
 
     @property

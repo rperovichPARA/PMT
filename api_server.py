@@ -120,6 +120,8 @@ class PositionOut(BaseModel):
     os_shares: float
     total_quantity: float
     total_pct_of_company: float
+    inception_date: str = ""
+    age_years: float | None = None
     funds: dict[str, FundPositionOut]
     # Metrics (populated by /api/metrics/refresh)
     pbr: float | None = None
@@ -139,6 +141,7 @@ class PositionOut(BaseModel):
     op_cagr_2y: float | None = None
     eps_cagr_2y: float | None = None
     # Returns (populated by /api/metrics/refresh)
+    ret_incep: float | None = None
     ret_1d: float | None = None
     ret_1w: float | None = None
     ret_1m: float | None = None
@@ -323,6 +326,14 @@ def list_positions():
                 new_rel_weight=fp.new_rel_weight,
             )
         metrics = _state["metrics"].get(pos.symbol, {})
+        age = None
+        if pos.inception_date:
+            try:
+                incep_dt = datetime.strptime(pos.inception_date, "%Y-%m-%d")
+                delta = datetime.now() - incep_dt
+                age = round(delta.days / 365.25, 1)
+            except Exception:
+                pass
         result.append(PositionOut(
             symbol=pos.symbol,
             name=pos.name,
@@ -333,6 +344,8 @@ def list_positions():
             os_shares=pos.os_shares,
             total_quantity=pos.total_quantity,
             total_pct_of_company=pos.calculate_pct_of_company(),
+            inception_date=pos.inception_date,
+            age_years=age,
             funds=funds_out,
             **{k: v for k, v in metrics.items() if k in PositionOut.model_fields},
         ))
@@ -359,6 +372,7 @@ async def import_portfolio(file: UploadFile = File(...)):
         has_adv = "10% 3m ADV" in df.columns
         has_os = "OS" in df.columns
         has_pct = "% of Company" in df.columns
+        has_inception = "Inception" in df.columns
 
         portfolio: dict[str, Position] = {}
         usd_jpy_rate = 0.0
@@ -395,11 +409,24 @@ async def import_portfolio(file: UploadFile = File(...)):
             elif is_cash:
                 price = 1.0
 
+            inception_iso = ""
+            if has_inception and not pd.isna(row.get("Inception")):
+                try:
+                    raw = row["Inception"]
+                    if isinstance(raw, str):
+                        dt = datetime.strptime(raw.strip(), "%m/%d/%Y")
+                    else:
+                        dt = pd.Timestamp(raw).to_pydatetime()
+                    inception_iso = dt.strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+
             if symbol not in portfolio:
                 portfolio[symbol] = Position(
                     symbol=symbol, name=name, price=price,
                     is_cash=is_cash, adv_10pct=adv,
                     currency=currency, os_shares=os_shares,
+                    inception_date=inception_iso,
                 )
             portfolio[symbol].funds[fund] = FundPosition(
                 quantity=quantity, pct_of_company=pct,
@@ -1205,6 +1232,12 @@ def refresh_metrics():
                         ytd_price = _find_price_on_or_before(ytd_target)
                         if ytd_price and ytd_price > 0:
                             m["ret_ytd"] = round((latest_price - ytd_price) / ytd_price * 100, 2)
+
+                        # Since inception return
+                        if position.inception_date:
+                            incep_price = _find_price_on_or_before(position.inception_date)
+                            if incep_price and incep_price > 0:
+                                m["ret_incep"] = round((latest_price - incep_price) / incep_price * 100, 2)
             except Exception as e:
                 print(f"  {symbol}: returns calc error: {e}")
 
