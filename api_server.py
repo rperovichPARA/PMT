@@ -843,8 +843,20 @@ def refresh_metrics():
 
     today = datetime.now()
     date_to = today.strftime("%Y%m%d")
-    # 5 years for returns; 1 year for beta
-    date_from_5y = (today - timedelta(days=365 * 5 + 2)).strftime("%Y%m%d")
+    # Determine earliest inception date across portfolio to ensure full coverage
+    earliest_inception = None
+    for pos in portfolio.values():
+        if pos.inception_date:
+            try:
+                d = datetime.strptime(pos.inception_date, "%Y-%m-%d")
+                if earliest_inception is None or d < earliest_inception:
+                    earliest_inception = d
+            except Exception:
+                pass
+    # Use earliest inception or 5 years, whichever is further back
+    default_from = today - timedelta(days=365 * 5 + 2)
+    date_from_bars = min(earliest_inception or default_from, default_from)
+    date_from_bars_str = (date_from_bars - timedelta(days=7)).strftime("%Y%m%d")  # small buffer
     date_from_1y = (today - timedelta(days=365)).strftime("%Y%m%d")
 
     # ---- Fetch TOPIX daily bars for beta calculation ----
@@ -883,7 +895,7 @@ def refresh_metrics():
         summary_data = _jquants_get("/fins/summary", {"code": code})
         stock_data = _jquants_get("/equities/bars/daily", {
             "code": code,
-            "from": date_from_5y,
+            "from": date_from_bars_str,
             "to": date_to,
         })
         return {"symbol": symbol, "detail_data": detail_data, "summary_data": summary_data, "stock_data": stock_data}
