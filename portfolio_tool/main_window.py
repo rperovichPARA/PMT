@@ -30,6 +30,8 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from PyQt5.QtWidgets import QTabWidget
+
 from .charts import build_cash_path_chart
 from .dialogs import AddPositionDialog, TargetPriceDialog, TradeDialog
 from .models import (
@@ -108,8 +110,16 @@ class PortfolioManager(QMainWindow):
 
         self._build_menu_bar()
 
+        # Tab widget
+        self._tab_widget = QTabWidget()
+        main_layout.addWidget(self._tab_widget)
+
+        # --- Tab 1: Current Portfolio ---
+        tab1 = QWidget()
+        tab1_layout = QVBoxLayout(tab1)
+
         self._main_splitter = QSplitter(Qt.Horizontal)
-        main_layout.addWidget(self._main_splitter)
+        tab1_layout.addWidget(self._main_splitter)
 
         # Left panel
         left = QWidget()
@@ -132,6 +142,14 @@ class PortfolioManager(QMainWindow):
         self._main_splitter.addWidget(right)
 
         self._main_splitter.setSizes([1050, 0, 350])
+
+        self._tab_widget.addTab(tab1, "Current Portfolio")
+
+        # --- Tab 2: Subscription/Redemption ---
+        from .sub_red_tab import SubscriptionRedemptionTab
+
+        self._sub_red_tab = SubscriptionRedemptionTab(self)
+        self._tab_widget.addTab(self._sub_red_tab, "Subscription/Redemption")
 
     def _build_menu_bar(self) -> None:
         mb = self.menuBar()
