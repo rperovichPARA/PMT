@@ -186,7 +186,6 @@ public class MainWindow {
         toolbar.setAlignment(Pos.CENTER_LEFT);
 
         Button importBtn = new Button("Import Portfolio");
-        importBtn.getStyleClass().add("primary");
         importBtn.setOnAction(e -> importPortfolio());
 
         Button tradeBtn = new Button("Create Trade");
@@ -229,14 +228,32 @@ public class MainWindow {
         });
         VBox.setVgrow(portfolioTable, Priority.ALWAYS);
 
+        // Custom sort policy: cash rows always pinned to bottom
+        portfolioTable.setSortPolicy(table -> {
+            FXCollections.sort(table.getItems(), (a, b) -> {
+                boolean aCash = a.getData().isCash();
+                boolean bCash = b.getData().isCash();
+                if (aCash && !bCash) return 1;
+                if (!aCash && bCash) return -1;
+                if (aCash && bCash) return 0;
+                // Apply the table's current sort order for non-cash rows
+                Comparator<PositionRow> tableComparator = (Comparator<PositionRow>) table.getComparator();
+                if (tableComparator != null) {
+                    return tableComparator.compare(a, b);
+                }
+                return 0;
+            });
+            return true;
+        });
+
         buildPortfolioColumns();
 
         panel.getChildren().addAll(toolbar, portfolioTable);
         return panel;
     }
 
-    private static final int NUM_FIXED_COLUMNS = 4;
-    private static final int NUM_METRIC_COLUMNS = 16;
+    private static final int NUM_FIXED_COLUMNS = 5; // Symbol, Name, Price, % of Company, Age
+    private static final int NUM_METRIC_COLUMNS = 26; // 16 metrics + 10 returns (incl. inception)
 
     private void buildPortfolioColumns() {
         portfolioTable.getColumns().clear();
@@ -253,13 +270,21 @@ public class MainWindow {
         priceCol.setCellValueFactory(new PropertyValueFactory<>("priceDisplay"));
         priceCol.setPrefWidth(100);
         priceCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+        priceCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
         TableColumn<PositionRow, String> pctCol = new TableColumn<>("% of Company");
         pctCol.setCellValueFactory(new PropertyValueFactory<>("pctOfCompanyDisplay"));
         pctCol.setPrefWidth(100);
         pctCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+        pctCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
-        portfolioTable.getColumns().addAll(symbolCol, nameCol, priceCol, pctCol);
+        TableColumn<PositionRow, String> ageCol = new TableColumn<>("Age (yr)");
+        ageCol.setCellValueFactory(new PropertyValueFactory<>("ageDisplay"));
+        ageCol.setPrefWidth(60);
+        ageCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+        ageCol.setComparator(NUMERIC_STRING_COMPARATOR);
+
+        portfolioTable.getColumns().addAll(symbolCol, nameCol, priceCol, pctCol, ageCol);
 
         // Metrics columns: (header, property, width, extractor, higherIsBetter)
         // Lower is better: PBR, PE*, PEG*, beta, payout
@@ -280,6 +305,18 @@ public class MainWindow {
         addMetricCol("2Y Sales", "salesCagr2y",  60, PositionData::getSalesCagr2y,true);
         addMetricCol("2Y Op",    "opCagr2y",     55, PositionData::getOpCagr2y,   true);
         addMetricCol("2Y EPS",   "epsCagr2y",    55, PositionData::getEpsCagr2y,  true);
+
+        // Return columns
+        addReturnCol("Incep", "retIncep", 55, PositionData::getRetIncep);
+        addReturnCol("1D",   "ret1d",   50, PositionData::getRet1d);
+        addReturnCol("1W",   "ret1w",   50, PositionData::getRet1w);
+        addReturnCol("1M",   "ret1m",   50, PositionData::getRet1m);
+        addReturnCol("3M",   "ret3m",   50, PositionData::getRet3m);
+        addReturnCol("6M",   "ret6m",   50, PositionData::getRet6m);
+        addReturnCol("YTD",  "retYtd",  50, PositionData::getRetYtd);
+        addReturnCol("1Y",   "ret1y",   55, PositionData::getRet1y);
+        addReturnCol("3Y",   "ret3y",   55, PositionData::getRet3y);
+        addReturnCol("5Y",   "ret5y",   55, PositionData::getRet5y);
     }
 
     private void addMetricCol(String header, String property, int width,
@@ -288,6 +325,7 @@ public class MainWindow {
         col.setCellValueFactory(new PropertyValueFactory<>(property));
         col.setPrefWidth(width);
         col.setStyle("-fx-alignment: CENTER-RIGHT;");
+        col.setComparator(NUMERIC_STRING_COMPARATOR);
 
         col.setCellFactory(column -> new TableCell<>() {
             @Override
@@ -352,6 +390,45 @@ public class MainWindow {
         portfolioTable.getColumns().add(col);
     }
 
+    private void addReturnCol(String header, String property, int width,
+                              Function<PositionData, Double> extractor) {
+        TableColumn<PositionRow, String> col = new TableColumn<>(header);
+        col.setCellValueFactory(new PropertyValueFactory<>(property));
+        col.setPrefWidth(width);
+        col.setStyle("-fx-alignment: CENTER-RIGHT;");
+        col.setComparator(NUMERIC_STRING_COMPARATOR);
+
+        col.setCellFactory(column -> new TableCell<>() {
+            @Override
+            protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null || item.isEmpty()) {
+                    setText(null);
+                    setStyle("-fx-alignment: CENTER-RIGHT;");
+                    return;
+                }
+                setText(item);
+                try {
+                    PositionRow row = getTableView().getItems().get(getIndex());
+                    Double rawValue = extractor.apply(row.getData());
+                    if (rawValue == null) {
+                        setStyle("-fx-alignment: CENTER-RIGHT;");
+                    } else if (rawValue > 0) {
+                        setStyle("-fx-alignment: CENTER-RIGHT; -fx-text-fill: #008800;");
+                    } else if (rawValue < 0) {
+                        setStyle("-fx-alignment: CENTER-RIGHT; -fx-text-fill: #cc0000;");
+                    } else {
+                        setStyle("-fx-alignment: CENTER-RIGHT;");
+                    }
+                } catch (Exception e) {
+                    setStyle("-fx-alignment: CENTER-RIGHT;");
+                }
+            }
+        });
+
+        portfolioTable.getColumns().add(col);
+    }
+
     private void rebuildFundColumns() {
         // Remove old fund columns (they sit between fixed columns and metric columns)
         // Total columns = fixed + fund + metric; fund columns start at NUM_FIXED_COLUMNS
@@ -373,6 +450,7 @@ public class MainWindow {
             });
             currCol.setPrefWidth(60);
             currCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+            currCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
             TableColumn<PositionRow, String> newCol = new TableColumn<>("New");
             newCol.setCellValueFactory(cd -> {
@@ -381,6 +459,7 @@ public class MainWindow {
             });
             newCol.setPrefWidth(60);
             newCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+            newCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
             // Color "New" column cells based on trade direction
             newCol.setCellFactory(col -> new TableCell<>() {
@@ -449,6 +528,7 @@ public class MainWindow {
             return new SimpleStringProperty(lf != null ? String.format("%.2f%%", lf * 100) : "-");
         });
         lastCol.setPrefWidth(80);
+        lastCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
         TableColumn<FilingData, String> upCol = new TableColumn<>("To Upward");
         upCol.setCellValueFactory(cd -> {
@@ -456,6 +536,7 @@ public class MainWindow {
             return new SimpleStringProperty(val != null ? String.format("%.2f%%", val * 100) : "-");
         });
         upCol.setPrefWidth(75);
+        upCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
         TableColumn<FilingData, String> downCol = new TableColumn<>("To Downward");
         downCol.setCellValueFactory(cd -> {
@@ -463,6 +544,7 @@ public class MainWindow {
             return new SimpleStringProperty(val != null ? String.format("%.2f%%", val * 100) : "-");
         });
         downCol.setPrefWidth(80);
+        downCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
         filingsTable.getColumns().addAll(symCol, nameCol, dateCol, lastCol, upCol, downCol);
 
@@ -484,7 +566,6 @@ public class MainWindow {
         Button editPriceBtn = new Button("Edit Target Price");
         editPriceBtn.setOnAction(e -> editTargetPrice());
         Button deleteBtn = new Button("Delete Trade");
-        deleteBtn.getStyleClass().add("danger");
         deleteBtn.setOnAction(e -> deleteTrade());
         cashPathBtn = new Button("Show Cash Path");
         cashPathBtn.setOnAction(e -> toggleCashPath());
@@ -516,6 +597,10 @@ public class MainWindow {
             }
         });
 
+        TableColumn<ExecutionData, String> nameCol = new TableColumn<>("Name");
+        nameCol.setCellValueFactory(new PropertyValueFactory<>("name"));
+        nameCol.setPrefWidth(120);
+
         TableColumn<ExecutionData, String> fundCol = new TableColumn<>("Fund");
         fundCol.setCellValueFactory(new PropertyValueFactory<>("fund"));
         fundCol.setPrefWidth(70);
@@ -529,18 +614,21 @@ public class MainWindow {
             new SimpleStringProperty(formatNumber(cd.getValue().getTradeQuantity())));
         qtyCol.setPrefWidth(80);
         qtyCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+        qtyCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
         TableColumn<ExecutionData, String> usdCol = new TableColumn<>("USD Value");
         usdCol.setCellValueFactory(cd ->
             new SimpleStringProperty(formatNumber(cd.getValue().getTradeValueUsd()) + " USD"));
         usdCol.setPrefWidth(100);
         usdCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+        usdCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
         TableColumn<ExecutionData, String> daysCol = new TableColumn<>("Days");
         daysCol.setCellValueFactory(cd ->
             new SimpleStringProperty(String.format("%.1f", cd.getValue().getTradingDays())));
         daysCol.setPrefWidth(50);
         daysCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+        daysCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
         TableColumn<ExecutionData, String> tgtCol = new TableColumn<>("Target PX");
         tgtCol.setCellValueFactory(cd -> {
@@ -549,6 +637,7 @@ public class MainWindow {
         });
         tgtCol.setPrefWidth(80);
         tgtCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+        tgtCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
         TableColumn<ExecutionData, String> pctCol = new TableColumn<>("% to Curr");
         pctCol.setCellValueFactory(cd -> {
@@ -557,8 +646,9 @@ public class MainWindow {
         });
         pctCol.setPrefWidth(70);
         pctCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+        pctCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
-        tradesTable.getColumns().addAll(typeCol, fundCol, symCol, qtyCol, usdCol, daysCol, tgtCol, pctCol);
+        tradesTable.getColumns().addAll(typeCol, nameCol, fundCol, symCol, qtyCol, usdCol, daysCol, tgtCol, pctCol);
 
         // Net total label
         Label netLabel = new Label("Net Total: -");
@@ -1208,6 +1298,31 @@ public class MainWindow {
     }
 
     /**
+     * Comparator for table columns that display numeric values as strings.
+     * Strips non-numeric chars (commas, %, 'x', 'USD', spaces) and parses as double.
+     * Nulls, blanks, and "-" sort to the end.
+     */
+    private static final Comparator<String> NUMERIC_STRING_COMPARATOR = (a, b) -> {
+        Double da = parseNumeric(a);
+        Double db = parseNumeric(b);
+        if (da == null && db == null) return 0;
+        if (da == null) return 1;
+        if (db == null) return -1;
+        return Double.compare(da, db);
+    };
+
+    private static Double parseNumeric(String s) {
+        if (s == null || s.isBlank() || "-".equals(s.trim())) return null;
+        try {
+            String cleaned = s.replaceAll("[^\\d.\\-eE]", "");
+            if (cleaned.isEmpty()) return null;
+            return Double.parseDouble(cleaned);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /**
      * Run a task asynchronously and handle the result on the JavaFX thread.
      */
     private <T> void runAsync(ThrowingSupplier<T> task, java.util.function.Consumer<T> onSuccess) {
@@ -1264,6 +1379,11 @@ public class MainWindow {
             return String.format("%.2f%%", data.getTotalPctOfCompany() * 100);
         }
 
+        public String getAgeDisplay() {
+            Double age = data.getAgeYears();
+            return age != null ? String.format("%.1f", age) : "";
+        }
+
         public String getFundRelWeight(int fundIdx) {
             if (fundIdx >= fundNames.size()) return "";
             String fundName = fundNames.get(fundIdx);
@@ -1302,5 +1422,17 @@ public class MainWindow {
         public String getSalesCagr2y() { return fmtOpt(data.getSalesCagr2y(), "%.1f%%"); }
         public String getOpCagr2y() { return fmtOpt(data.getOpCagr2y(), "%.1f%%"); }
         public String getEpsCagr2y() { return fmtOpt(data.getEpsCagr2y(), "%.1f%%"); }
+
+        // Returns accessors
+        public String getRetIncep() { return fmtOpt(data.getRetIncep(), "%.1f%%"); }
+        public String getRet1d() { return fmtOpt(data.getRet1d(), "%.2f%%"); }
+        public String getRet1w() { return fmtOpt(data.getRet1w(), "%.2f%%"); }
+        public String getRet1m() { return fmtOpt(data.getRet1m(), "%.1f%%"); }
+        public String getRet3m() { return fmtOpt(data.getRet3m(), "%.1f%%"); }
+        public String getRet6m() { return fmtOpt(data.getRet6m(), "%.1f%%"); }
+        public String getRetYtd() { return fmtOpt(data.getRetYtd(), "%.1f%%"); }
+        public String getRet1y() { return fmtOpt(data.getRet1y(), "%.1f%%"); }
+        public String getRet3y() { return fmtOpt(data.getRet3y(), "%.1f%%"); }
+        public String getRet5y() { return fmtOpt(data.getRet5y(), "%.1f%%"); }
     }
 }

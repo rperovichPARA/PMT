@@ -120,6 +120,8 @@ class PositionOut(BaseModel):
     os_shares: float
     total_quantity: float
     total_pct_of_company: float
+    inception_date: str = ""
+    age_years: float | None = None
     funds: dict[str, FundPositionOut]
     # Metrics (populated by /api/metrics/refresh)
     pbr: float | None = None
@@ -138,6 +140,17 @@ class PositionOut(BaseModel):
     sales_cagr_2y: float | None = None
     op_cagr_2y: float | None = None
     eps_cagr_2y: float | None = None
+    # Returns (populated by /api/metrics/refresh)
+    ret_incep: float | None = None
+    ret_1d: float | None = None
+    ret_1w: float | None = None
+    ret_1m: float | None = None
+    ret_3m: float | None = None
+    ret_6m: float | None = None
+    ret_ytd: float | None = None
+    ret_1y: float | None = None
+    ret_3y: float | None = None
+    ret_5y: float | None = None
 
 
 class FilingOut(BaseModel):
@@ -153,6 +166,7 @@ class ExecutionOut(BaseModel):
     key: str
     fund: str
     symbol: str
+    name: str
     trade_type: str
     trade_quantity: float
     target_raw: float
@@ -312,6 +326,14 @@ def list_positions():
                 new_rel_weight=fp.new_rel_weight,
             )
         metrics = _state["metrics"].get(pos.symbol, {})
+        age = None
+        if pos.inception_date:
+            try:
+                incep_dt = datetime.strptime(pos.inception_date, "%Y-%m-%d")
+                delta = datetime.now() - incep_dt
+                age = round(delta.days / 365.25, 1)
+            except Exception:
+                pass
         result.append(PositionOut(
             symbol=pos.symbol,
             name=pos.name,
@@ -322,6 +344,8 @@ def list_positions():
             os_shares=pos.os_shares,
             total_quantity=pos.total_quantity,
             total_pct_of_company=pos.calculate_pct_of_company(),
+            inception_date=pos.inception_date,
+            age_years=age,
             funds=funds_out,
             **{k: v for k, v in metrics.items() if k in PositionOut.model_fields},
         ))
@@ -348,6 +372,7 @@ async def import_portfolio(file: UploadFile = File(...)):
         has_adv = "10% 3m ADV" in df.columns
         has_os = "OS" in df.columns
         has_pct = "% of Company" in df.columns
+        has_inception = "Inception" in df.columns
 
         portfolio: dict[str, Position] = {}
         usd_jpy_rate = 0.0
@@ -384,11 +409,24 @@ async def import_portfolio(file: UploadFile = File(...)):
             elif is_cash:
                 price = 1.0
 
+            inception_iso = ""
+            if has_inception and not pd.isna(row.get("Inception")):
+                try:
+                    raw = row["Inception"]
+                    if isinstance(raw, str):
+                        dt = datetime.strptime(raw.strip(), "%m/%d/%Y")
+                    else:
+                        dt = pd.Timestamp(raw).to_pydatetime()
+                    inception_iso = dt.strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+
             if symbol not in portfolio:
                 portfolio[symbol] = Position(
                     symbol=symbol, name=name, price=price,
                     is_cash=is_cash, adv_10pct=adv,
                     currency=currency, os_shares=os_shares,
+                    inception_date=inception_iso,
                 )
             portfolio[symbol].funds[fund] = FundPosition(
                 quantity=quantity, pct_of_company=pct,
@@ -494,10 +532,14 @@ def submit_trade(req: SubmitTradeRequest):
 def list_trades():
     result = []
     for key, ex in _state["proposed_executions"].items():
+        # Look up security name from portfolio
+        pos = _state["portfolio"].get(ex.symbol)
+        sec_name = pos.name if pos else ex.symbol
         result.append(ExecutionOut(
             key=key,
             fund=ex.fund,
             symbol=ex.symbol,
+            name=sec_name,
             trade_type=ex.trade_type,
             trade_quantity=ex.trade_quantity,
             target_raw=ex.target_raw,
@@ -801,7 +843,20 @@ def refresh_metrics():
 
     today = datetime.now()
     date_to = today.strftime("%Y%m%d")
-    # 1 year for beta
+    # Determine earliest inception date across portfolio to ensure full coverage
+    earliest_inception = None
+    for pos in portfolio.values():
+        if pos.inception_date:
+            try:
+                d = datetime.strptime(pos.inception_date, "%Y-%m-%d")
+                if earliest_inception is None or d < earliest_inception:
+                    earliest_inception = d
+            except Exception:
+                pass
+    # Use earliest inception or 5 years, whichever is further back
+    default_from = today - timedelta(days=365 * 5 + 2)
+    date_from_bars = min(earliest_inception or default_from, default_from)
+    date_from_bars_str = (date_from_bars - timedelta(days=7)).strftime("%Y%m%d")  # small buffer
     date_from_1y = (today - timedelta(days=365)).strftime("%Y%m%d")
 
     # ---- Fetch TOPIX daily bars for beta calculation ----
@@ -840,7 +895,7 @@ def refresh_metrics():
         summary_data = _jquants_get("/fins/summary", {"code": code})
         stock_data = _jquants_get("/equities/bars/daily", {
             "code": code,
-            "from": date_from_1y,
+            "from": date_from_bars_str,
             "to": date_to,
         })
         return {"symbol": symbol, "detail_data": detail_data, "summary_data": summary_data, "stock_data": stock_data}
@@ -1143,6 +1198,60 @@ def refresh_metrics():
                                 m["beta"] = round(float(beta_val), 2)
                 except Exception as e:
                     print(f"  {symbol}: beta calc error: {e}")
+
+            # ---- Price returns (1d, 1w, 1m, 3m, 6m, YTD, 1y, 3y, 5y) ----
+            try:
+                stock_bars = fetched["stock_data"].get("data") or fetched["stock_data"].get("eq_bars_daily") or []
+                if stock_bars:
+                    closes_by_date: dict[str, float] = {}
+                    for bar in stock_bars:
+                        dt = bar.get("Date", "")
+                        c = bar.get("AdjClose") or bar.get("Close") or bar.get("AdjC") or bar.get("C")
+                        if c is not None and dt:
+                            try:
+                                closes_by_date[dt] = float(c)
+                            except (ValueError, TypeError):
+                                pass
+                    if closes_by_date:
+                        sorted_dates = sorted(closes_by_date.keys())
+                        latest_price = closes_by_date[sorted_dates[-1]]
+
+                        def _find_price_on_or_before(target_date_str: str) -> float | None:
+                            """Find closing price on target date or nearest prior date."""
+                            for d in reversed(sorted_dates):
+                                if d <= target_date_str:
+                                    return closes_by_date[d]
+                            return None
+
+                        def _calc_return(days_ago: int) -> float | None:
+                            target = (today - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+                            p = _find_price_on_or_before(target)
+                            if p and p > 0:
+                                return round((latest_price - p) / p * 100, 2)
+                            return None
+
+                        m["ret_1d"] = _calc_return(1)
+                        m["ret_1w"] = _calc_return(7)
+                        m["ret_1m"] = _calc_return(30)
+                        m["ret_3m"] = _calc_return(91)
+                        m["ret_6m"] = _calc_return(182)
+                        m["ret_1y"] = _calc_return(365)
+                        m["ret_3y"] = _calc_return(365 * 3)
+                        m["ret_5y"] = _calc_return(365 * 5)
+
+                        # YTD: from last trading day of previous year
+                        ytd_target = f"{today.year - 1}-12-31"
+                        ytd_price = _find_price_on_or_before(ytd_target)
+                        if ytd_price and ytd_price > 0:
+                            m["ret_ytd"] = round((latest_price - ytd_price) / ytd_price * 100, 2)
+
+                        # Since inception return
+                        if position.inception_date:
+                            incep_price = _find_price_on_or_before(position.inception_date)
+                            if incep_price and incep_price > 0:
+                                m["ret_incep"] = round((latest_price - incep_price) / incep_price * 100, 2)
+            except Exception as e:
+                print(f"  {symbol}: returns calc error: {e}")
 
             _state["metrics"][symbol] = m
             updated += 1

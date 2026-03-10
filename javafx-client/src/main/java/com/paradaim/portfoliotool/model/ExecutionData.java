@@ -8,6 +8,7 @@ public class ExecutionData {
     private String key;
     private String fund;
     private String symbol;
+    private String name;
     @JsonProperty("trade_type")
     private String tradeType;
     @JsonProperty("trade_quantity")
@@ -33,6 +34,9 @@ public class ExecutionData {
 
     public String getSymbol() { return symbol; }
     public void setSymbol(String v) { this.symbol = v; }
+
+    public String getName() { return name; }
+    public void setName(String v) { this.name = v; }
 
     public String getTradeType() { return tradeType; }
     public void setTradeType(String v) { this.tradeType = v; }
