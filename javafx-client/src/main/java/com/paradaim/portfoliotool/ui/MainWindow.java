@@ -12,6 +12,7 @@ import javafx.collections.ObservableList;
 import javafx.geometry.Insets;
 import javafx.geometry.Orientation;
 import javafx.geometry.Pos;
+import javafx.scene.Node;
 import javafx.scene.Parent;
 import javafx.scene.chart.LineChart;
 import javafx.scene.chart.NumberAxis;
@@ -62,6 +63,7 @@ public class MainWindow {
     private Button cashPathBtn;
     private VBox cashPathPanel;
     private boolean cashPathVisible = false;
+    private VBox tradesPanel;
     // (tradeChartSplit removed – cash path is now in bottomSplit)
 
     // Default sort flag (set before refreshAll after import)
@@ -158,7 +160,7 @@ public class MainWindow {
         filingsPanel.setManaged(false);
 
         // Bottom: horizontal split with trades (left) and cash path (right)
-        VBox tradesPanel = buildTradesPanel();
+        tradesPanel = buildTradesPanel();
         cashPathPanel = new VBox(4);
         cashPathPanel.setPadding(new Insets(8));
 
@@ -882,15 +884,11 @@ public class MainWindow {
         if (filingsVisible) {
             filingsPanel.setVisible(true);
             filingsPanel.setManaged(true);
-            if (!mainSplit.getItems().contains(filingsPanel)) {
-                mainSplit.getItems().add(1, filingsPanel);
-                mainSplit.setDividerPositions(0.5, 0.75);
-            }
         } else {
-            mainSplit.getItems().remove(filingsPanel);
             filingsPanel.setVisible(false);
             filingsPanel.setManaged(false);
         }
+        rebuildLowerLayout();
     }
 
     private void toggleCashPath() {
@@ -899,23 +897,67 @@ public class MainWindow {
             cashPathBtn.setText("Hide Cash Path");
             cashPathPanel.setVisible(true);
             cashPathPanel.setManaged(true);
-
-            // Add cash path panel to the bottom-right of the bottom split
-            ScrollPane chartScroll = new ScrollPane(cashPathPanel);
-            chartScroll.setFitToWidth(true);
-            chartScroll.setFitToHeight(true);
-            if (bottomSplit.getItems().size() < 2) {
-                bottomSplit.getItems().add(chartScroll);
-            }
-            bottomSplit.setDividerPositions(0.4);
-            refreshCashPath();
         } else {
             cashPathBtn.setText("Show Cash Path");
             cashPathPanel.setVisible(false);
             cashPathPanel.setManaged(false);
-            // Remove chart from bottom split
-            if (bottomSplit.getItems().size() > 1) {
-                bottomSplit.getItems().remove(1);
+        }
+        rebuildLowerLayout();
+        if (cashPathVisible) {
+            refreshCashPath();
+        }
+    }
+
+    /**
+     * Rebuilds the lower portion of mainSplit based on filings/cashPath visibility.
+     *
+     * When cash path is hidden:
+     *   mainSplit = portfolioPanel | [filingsPanel] | bottomSplit(tradesPanel)
+     *
+     * When cash path is visible:
+     *   mainSplit = portfolioPanel | bottomSplit( leftColumn(filings+trades) | cashPathChart )
+     *   The cash path chart spans the full height of the lower section.
+     */
+    private void rebuildLowerLayout() {
+        // Preserve the portfolio panel (always index 0)
+        Node portfolioPanel = mainSplit.getItems().get(0);
+
+        // Remove everything except portfolioPanel
+        mainSplit.getItems().clear();
+        mainSplit.getItems().add(portfolioPanel);
+
+        bottomSplit.getItems().clear();
+
+        if (cashPathVisible) {
+            // Stack filings (if visible) + trades on the left in a resizable SplitPane
+            SplitPane leftColumn = new SplitPane();
+            leftColumn.setOrientation(Orientation.VERTICAL);
+            if (filingsVisible) {
+                leftColumn.getItems().addAll(filingsPanel, tradesPanel);
+                leftColumn.setDividerPositions(0.25);
+            } else {
+                leftColumn.getItems().add(tradesPanel);
+            }
+
+            ScrollPane chartScroll = new ScrollPane(cashPathPanel);
+            chartScroll.setFitToWidth(true);
+            chartScroll.setFitToHeight(true);
+
+            bottomSplit.getItems().addAll(leftColumn, chartScroll);
+            bottomSplit.setDividerPositions(0.4);
+
+            mainSplit.getItems().add(bottomSplit);
+            mainSplit.setDividerPositions(0.35);
+        } else {
+            // No cash path: filings as separate row in mainSplit, trades in bottomSplit
+            bottomSplit.getItems().add(tradesPanel);
+
+            if (filingsVisible) {
+                mainSplit.getItems().addAll(filingsPanel, bottomSplit);
+                mainSplit.setDividerPositions(0.5, 0.75);
+            } else {
+                mainSplit.getItems().add(bottomSplit);
+                mainSplit.setDividerPositions(0.55);
             }
         }
     }
@@ -958,12 +1000,12 @@ public class MainWindow {
         LineChart<Number, Number> chart = new LineChart<>(xAxis, yAxis);
         chart.setTitle(String.format("%s — Cash: %.1fmm | Min: %.1fmm | End: %.1fmm",
                 resp.getFund(), resp.getCurrentCashMm(), resp.getMinCashMm(), resp.getEndingCashMm()));
-        chart.setMinHeight(150);
-        chart.setPrefHeight(Region.USE_COMPUTED_SIZE);
+        chart.setMinHeight(100);
+        chart.setPrefHeight(Integer.MAX_VALUE);
         chart.setMaxHeight(Double.MAX_VALUE);
         chart.setCreateSymbols(false);
         chart.setAnimated(false);
-        chart.setLegendVisible(true);
+        chart.setLegendVisible(false);
         VBox.setVgrow(chart, Priority.ALWAYS);
 
         // Aggregate cash position line (cumulative, reflects all buys and sells)
@@ -997,23 +1039,10 @@ public class MainWindow {
             tradeSeries.getNode().setStyle("-fx-stroke-width: 1px; -fx-opacity: 0.7;");
         }
 
-        // --- Trade breakdown summary below the chart ---
-        VBox tradeInfo = new VBox(2);
-        tradeInfo.setPadding(new Insets(2, 8, 4, 8));
-        for (CashPathSeries s : resp.getSeries()) {
-            double totalImpact = s.getValues().stream().mapToDouble(Double::doubleValue).sum();
-            int numDays = s.getDays().stream().mapToInt(Integer::intValue).max().orElse(0);
-            String arrow = totalImpact >= 0 ? "\u2191" : "\u2193";  // up/down arrow
-            String color = totalImpact >= 0 ? "#008800" : "#cc0000";
-            Label lbl = new Label(String.format("  %s %s: %.2fmm over %d days (%s)",
-                    arrow, s.getSymbol(), totalImpact, numDays, s.getTradeType()));
-            lbl.setStyle(String.format("-fx-font-size: 11px; -fx-text-fill: %s;", color));
-            tradeInfo.getChildren().add(lbl);
-        }
-
-        VBox wrapper = new VBox(4, chart, tradeInfo);
-        wrapper.setPadding(new Insets(4, 0, 4, 0));
+        VBox wrapper = new VBox(0, chart);
+        wrapper.setPadding(new Insets(0));
         VBox.setVgrow(chart, Priority.ALWAYS);
+        VBox.setVgrow(wrapper, Priority.ALWAYS);
         return wrapper;
     }
 
@@ -1031,14 +1060,17 @@ public class MainWindow {
     private void updateTradesTable(List<ExecutionData> trades) {
         tradesData.setAll(trades);
 
-        // Update net total
-        double net = trades.stream().mapToDouble(ExecutionData::getTradeValueSigned).sum();
+        // Update net total (cash perspective: sells raise cash, buys spend cash)
+        // trade_value_signed is +ve for buys, -ve for sells, so negate for cash impact
+        double cashImpact = -trades.stream().mapToDouble(ExecutionData::getTradeValueSigned).sum();
         Label netLabel = (Label) root.lookup("#netTotalLabel");
         if (netLabel != null) {
-            netLabel.setText(String.format("Net Total: %s USD", formatNumber(net)));
-            if (net > 0) {
+            netLabel.setText(String.format("Net Total: %s USD", formatNumber(cashImpact)));
+            if (cashImpact > 0) {
+                // Net sells > buys → raising cash → green
                 netLabel.setStyle("-fx-font-weight: bold; -fx-text-fill: #008800;");
-            } else if (net < 0) {
+            } else if (cashImpact < 0) {
+                // Net buys > sells → cash drawdown → red
                 netLabel.setStyle("-fx-font-weight: bold; -fx-text-fill: #cc0000;");
             } else {
                 netLabel.setStyle("-fx-font-weight: bold;");
