@@ -79,6 +79,9 @@ public class PositionData {
     @JsonProperty("ret_5y")
     private Double ret5y;
 
+    @JsonProperty("is_new")
+    private boolean isNew;
+
     public String getSymbol() { return symbol; }
     public void setSymbol(String v) { this.symbol = v; }
 
@@ -167,4 +170,7 @@ public class PositionData {
     public void setRet3y(Double v) { this.ret3y = v; }
     public Double getRet5y() { return ret5y; }
     public void setRet5y(Double v) { this.ret5y = v; }
+
+    public boolean isNew() { return isNew; }
+    public void setNew(boolean v) { this.isNew = v; }
 }

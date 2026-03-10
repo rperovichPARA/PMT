@@ -261,10 +261,46 @@ public class MainWindow {
         TableColumn<PositionRow, String> symbolCol = new TableColumn<>("Symbol");
         symbolCol.setCellValueFactory(new PropertyValueFactory<>("symbol"));
         symbolCol.setPrefWidth(80);
+        symbolCol.setCellFactory(col -> new TableCell<>() {
+            @Override
+            protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                    setStyle("");
+                    return;
+                }
+                setText(item);
+                PositionRow row = getTableView().getItems().get(getIndex());
+                if (row.getData().isNew()) {
+                    setStyle("-fx-text-fill: #1a53ff; -fx-font-weight: bold;");
+                } else {
+                    setStyle("");
+                }
+            }
+        });
 
         TableColumn<PositionRow, String> nameCol = new TableColumn<>("Name");
         nameCol.setCellValueFactory(new PropertyValueFactory<>("name"));
         nameCol.setPrefWidth(180);
+        nameCol.setCellFactory(col -> new TableCell<>() {
+            @Override
+            protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                    setStyle("");
+                    return;
+                }
+                setText(item);
+                PositionRow row = getTableView().getItems().get(getIndex());
+                if (row.getData().isNew()) {
+                    setStyle("-fx-text-fill: #1a53ff; -fx-font-weight: bold;");
+                } else {
+                    setStyle("");
+                }
+            }
+        });
 
         TableColumn<PositionRow, String> priceCol = new TableColumn<>("Price (JPY)");
         priceCol.setCellValueFactory(new PropertyValueFactory<>("priceDisplay"));
@@ -1390,6 +1426,8 @@ public class MainWindow {
             if (data.getFunds() == null) return "";
             FundPositionData fp = data.getFunds().get(fundName);
             if (fp == null || data.isCash()) return "";
+            // New positions have no "current" weight - leave blank
+            if (data.isNew()) return "";
             return String.format("%.2fx", fp.getRelWeight());
         }
 

@@ -93,6 +93,7 @@ _state: dict[str, Any] = {
     "proposed_executions": {}, # dict[str, ProposedExecution]
     "use_yfinance": False,
     "metrics": {},             # dict[str, dict] – per-symbol metrics from /fins/details
+    "new_positions": set(),    # set[str] – symbols added via Add Position dialog
 }
 
 
@@ -151,6 +152,7 @@ class PositionOut(BaseModel):
     ret_1y: float | None = None
     ret_3y: float | None = None
     ret_5y: float | None = None
+    is_new: bool = False
 
 
 class FilingOut(BaseModel):
@@ -199,6 +201,9 @@ class AddPositionRequest(BaseModel):
     currency: str = "JPY"
     os_shares: float = 0.0
     fund_quantities: dict[str, float] = {}
+    # New fields for rel-weight-based addition
+    fund_rel_weights: dict[str, float] = {}
+    is_new_addition: bool = False
 
 
 class SubmitTradeRequest(BaseModel):
@@ -267,6 +272,10 @@ def _recompute_weights() -> None:
                     total_value += value_jpy
                     securities_count += 1
 
+                # Recalculate % of company from os_shares whenever available
+                if pos.os_shares > 0 and not pos.is_cash:
+                    fp.pct_of_company = fp.quantity / pos.os_shares
+
         avg_weight = 100.0 / securities_count if securities_count > 0 else 0.0
 
         for pos in portfolio.values():
@@ -334,6 +343,7 @@ def list_positions():
                 age = round(delta.days / 365.25, 1)
             except Exception:
                 pass
+        is_new = pos.symbol in _state.get("new_positions", set())
         result.append(PositionOut(
             symbol=pos.symbol,
             name=pos.name,
@@ -347,6 +357,7 @@ def list_positions():
             inception_date=pos.inception_date,
             age_years=age,
             funds=funds_out,
+            is_new=is_new,
             **{k: v for k, v in metrics.items() if k in PositionOut.model_fields},
         ))
     return result
@@ -436,6 +447,7 @@ async def import_portfolio(file: UploadFile = File(...)):
         _state["fund_names"] = fund_names
         _state["usd_jpy_rate"] = usd_jpy_rate
         _state["proposed_executions"] = {}
+        _state["new_positions"] = set()
         _recompute_weights()
 
         return {"message": f"Imported {len(portfolio)} positions across {len(fund_names)} fund(s)"}
@@ -464,10 +476,70 @@ def add_position(req: AddPositionRequest):
         os_shares=req.os_shares,
     )
 
-    for fn, qty in req.fund_quantities.items():
-        pos.funds[fn] = FundPosition(quantity=qty)
-        if fn not in fund_names:
-            fund_names.append(fn)
+    # Handle rel-weight-based addition (new position workflow)
+    if req.fund_rel_weights and not req.is_cash and price > 0:
+        rate = _state["usd_jpy_rate"] or DEFAULT_EXCHANGE_RATE
+        for fn, rel_weight in req.fund_rel_weights.items():
+            if fn not in fund_names:
+                fund_names.append(fn)
+
+            # Count existing securities and total value for this fund
+            securities_count = 0
+            total_portfolio_jpy = 0.0
+            for p in portfolio.values():
+                if p.is_cash:
+                    continue
+                fp = p.funds.get(fn)
+                if fp and fp.quantity > 0:
+                    securities_count += 1
+                    total_portfolio_jpy += p.price * fp.quantity
+
+            if securities_count == 0 or total_portfolio_jpy <= 0:
+                continue
+
+            # New position increases securities count by 1
+            new_securities_count = securities_count + 1
+            avg_weight = 100.0 / new_securities_count
+            target_weight = rel_weight * avg_weight
+
+            # Compute target position value and quantity
+            # The new total portfolio value includes this new position
+            # target_weight/100 = target_position_jpy / (total_portfolio_jpy + target_position_jpy)
+            # Solving: target_position_jpy = target_weight * total_portfolio_jpy / (100 - target_weight)
+            if target_weight >= 100:
+                continue
+            target_position_jpy = (target_weight / 100.0) * total_portfolio_jpy / (1.0 - target_weight / 100.0)
+            trade_quantity = round(target_position_jpy / price)
+
+            if trade_quantity <= 0:
+                continue
+
+            pos.funds[fn] = FundPosition(quantity=trade_quantity)
+
+            trade_value_jpy = trade_quantity * price
+            trade_value_usd = trade_value_jpy / rate
+            adv = req.adv_10pct
+            trading_days = abs(trade_value_usd) / adv if adv > 0 else 0.0
+
+            key = f"{fn}:{symbol}"
+            _state["proposed_executions"][key] = ProposedExecution(
+                fund=fn,
+                symbol=symbol,
+                trade_type="Buy",
+                trade_quantity=trade_quantity,
+                target_raw=rel_weight,
+                trade_value_usd=abs(trade_value_usd),
+                trade_value_signed=abs(trade_value_usd),
+                trading_days=trading_days,
+            )
+    else:
+        for fn, qty in req.fund_quantities.items():
+            pos.funds[fn] = FundPosition(quantity=qty)
+            if fn not in fund_names:
+                fund_names.append(fn)
+
+    if req.is_new_addition:
+        _state.setdefault("new_positions", set()).add(symbol)
 
     portfolio[symbol] = pos
     _recompute_weights()
@@ -958,7 +1030,7 @@ def refresh_metrics():
             price = position.price
             os_shares = position.os_shares
 
-            # ---- Parse /fins/summary for FEPS, NxFEPS, FNP etc. ----
+            # ---- Parse /fins/summary for FEPS, NxFEPS, FNP etc. and os_shares ----
             summary_data = fetched.get("summary_data", {})
             # Try multiple possible response wrapper keys
             summary_records = (
@@ -1026,6 +1098,56 @@ def refresh_metrics():
                         if summary_nxfnp is None:
                             summary_nxfnp = _sfloat(srec, "NxFNp")
 
+            # Auto-populate os_shares from summary if not set from XLS
+            if os_shares <= 0 and summary_records:
+                _os_keys = [
+                    "NumberOfIssuedAndOutstandingSharesAtTheEndOfFiscalYearIncludingTreasuryStock",
+                    "NumSharesOutstanding",
+                    "SharesOutstanding",
+                    "IssuedShares",
+                    "NumberOfShares",
+                ]
+                for srec in summary_records:
+                    found = False
+                    for osk in _os_keys:
+                        val = srec.get(osk)
+                        if val is not None:
+                            try:
+                                candidate = float(val)
+                                if candidate > 0:
+                                    os_shares = candidate
+                                    position.os_shares = os_shares
+                                    print(f"  {symbol}: os_shares from summary field '{osk}': {os_shares:,.0f}")
+                                    found = True
+                                    break
+                            except (ValueError, TypeError):
+                                pass
+                    if found:
+                        break
+
+            # Fallback: try shares_outstanding from FS details
+            if os_shares <= 0:
+                for pr in parsed_records:
+                    if pr.get("shares_outstanding") is not None and pr["shares_outstanding"] > 0:
+                        os_shares = pr["shares_outstanding"]
+                        position.os_shares = os_shares
+                        print(f"  {symbol}: os_shares from FS details: {os_shares:,.0f}")
+                        break
+
+            # Fallback: try to derive os_shares from FS details (equity / BPS)
+            if os_shares <= 0 and summary_bps and summary_bps > 0:
+                equity_for_os = None
+                for pr in parsed_records:
+                    if pr.get("equity") is not None and pr["equity"] > 0:
+                        equity_for_os = pr["equity"]
+                        break
+                if equity_for_os is None and summary_eq and summary_eq > 0:
+                    equity_for_os = summary_eq
+                if equity_for_os and equity_for_os > 0:
+                    os_shares = equity_for_os / summary_bps
+                    position.os_shares = os_shares
+                    print(f"  {symbol}: os_shares derived from equity/BPS: {os_shares:,.0f}")
+
             if summary_records:
                 print(f"  {symbol}: summary has {len(summary_records)} records, "
                       f"keys={list(summary_records[0].keys())[:10]}..., "
@@ -1034,7 +1156,7 @@ def refresh_metrics():
             else:
                 print(f"  {symbol}: NO summary records (raw keys={list(summary_data.keys()) if isinstance(summary_data, dict) else 'list'})")
 
-            # ---- PBR: Price / (Equity / Shares) ----
+            # ---- PBR: Price / (Equity / Shares), fallback to Price / BPS ----
             equity = None
             for pr in parsed_records:
                 if pr.get("equity") is not None:
@@ -1045,6 +1167,15 @@ def refresh_metrics():
             if equity and equity > 0 and os_shares > 0 and price > 0:
                 bvps = equity / os_shares
                 m["pbr"] = round(price / bvps, 2)
+            elif summary_bps and summary_bps > 0 and price > 0:
+                m["pbr"] = round(price / summary_bps, 2)
+            # Also try BPS from FS details
+            if "pbr" not in m and price > 0:
+                for pr in parsed_records:
+                    bps_det = pr.get("bps_detail")
+                    if bps_det and bps_det > 0:
+                        m["pbr"] = round(price / bps_det, 2)
+                        break
 
             # ---- PE LTM: Price / (Net Income FY / Shares), fallback to summary EPS ----
             net_income_fy = fy_record.get("net_income") if fy_record else None
@@ -1137,10 +1268,38 @@ def refresh_metrics():
                     m["plowback"] = round(1.0 - payout_dec, 3)
                     m["payout_ratio"] = round(payout_dec * 100, 1)
 
-            # ---- Div Yield: Dividends Paid / Market Cap ----
+            # ---- Div Yield: Dividends Paid / Market Cap, fallback to DPS or summary ----
             if dividends_paid is not None and os_shares > 0 and price > 0:
                 div_per_share = dividends_paid / os_shares
                 m["div_yield"] = round(div_per_share / price * 100, 2)
+
+            # Fallback: use DPS from FS details
+            if "div_yield" not in m and price > 0:
+                for pr in parsed_records:
+                    dps = pr.get("dps_detail")
+                    if dps is not None and dps > 0:
+                        m["div_yield"] = round(dps / price * 100, 2)
+                        break
+
+            # Fallback: use DPS from summary records
+            if "div_yield" not in m and price > 0 and summary_records:
+                _dps_keys = [
+                    "DividendPerShareAnnual", "DPS", "DividendPerShare",
+                    "AnnualDividendPerShare", "DividendsPerShare",
+                ]
+                for srec in summary_records:
+                    for dk in _dps_keys:
+                        val = srec.get(dk)
+                        if val is not None:
+                            try:
+                                dps_val = float(val)
+                                if dps_val > 0:
+                                    m["div_yield"] = round(dps_val / price * 100, 2)
+                                    break
+                            except (ValueError, TypeError):
+                                pass
+                    if "div_yield" in m:
+                        break
 
             # ---- OPM: Operating Profit / Net Sales ----
             op_profit = None
@@ -1328,6 +1487,22 @@ _FS_LABEL_MAP: list[tuple[str, list[str]]] = [
     ("dividends_paid", [
         "dividends paid",
         "cash dividends paid",
+        "dividends paid to owners of parent",
+        "total dividends paid",
+    ]),
+    # Outstanding shares (sometimes in details)
+    ("shares_outstanding", [
+        "total number of issued shares",
+        "number of issued and outstanding shares",
+        "number of shares issued",
+        "shares outstanding",
+        "issued shares",
+    ]),
+    # Dividends per share
+    ("dps_detail", [
+        "dividend per share",
+        "dividends per share",
+        "cash dividends per share",
     ]),
     # Per-share (sometimes in details)
     ("eps_detail", [
@@ -1451,6 +1626,97 @@ def _compute_cagr(values: list[tuple[str, float]]) -> float | None:
     if years <= 0:
         return None
     return (newest / oldest) ** (1.0 / years) - 1.0
+
+
+@app.get("/api/stock/lookup/{symbol}")
+def stock_lookup(symbol: str):
+    """Fetch name, price, ADV, and os_shares for a single stock from J-Quants."""
+    code = f"{symbol}0"
+    today = datetime.now()
+    date_to = today.strftime("%Y%m%d")
+    date_from = (today - timedelta(days=90)).strftime("%Y%m%d")
+    rate = _state["usd_jpy_rate"] or DEFAULT_EXCHANGE_RATE
+
+    result: dict[str, Any] = {"symbol": symbol}
+    errors = []
+
+    # Fetch listed info for company name
+    try:
+        info_data = _jquants_get("/listed/info", {"code": code})
+        info_records = info_data.get("info") or []
+        if info_records:
+            latest_info = info_records[-1]
+            result["name"] = latest_info.get("CompanyNameEnglish") or latest_info.get("CompanyName") or ""
+        else:
+            result["name"] = ""
+    except Exception as e:
+        result["name"] = ""
+        errors.append(f"listed/info: {e}")
+
+    # Fetch daily bars for price and ADV
+    try:
+        bar_data = _jquants_get("/equities/bars/daily", {
+            "code": code, "from": date_from, "to": date_to,
+        })
+        bars = bar_data.get("data") or bar_data.get("eq_bars_daily") or []
+        if bars:
+            latest = bars[-1]
+            price = latest.get("Close") or latest.get("AdjClose") or latest.get("C") or latest.get("AdjC")
+            result["price"] = float(price) if price is not None else 0.0
+
+            volumes = []
+            for bar in bars:
+                vol = bar.get("Volume") or bar.get("AdjVo") or bar.get("Vo") or 0
+                if vol and float(vol) > 0:
+                    volumes.append(float(vol))
+            if volumes and result["price"] > 0:
+                avg_vol = sum(volumes) / len(volumes)
+                result["adv_10pct"] = (avg_vol * 0.10 * result["price"]) / rate
+            else:
+                result["adv_10pct"] = 0.0
+        else:
+            result["price"] = 0.0
+            result["adv_10pct"] = 0.0
+            errors.append("no daily bars")
+    except Exception as e:
+        result["price"] = 0.0
+        result["adv_10pct"] = 0.0
+        errors.append(f"bars: {e}")
+
+    # Fetch /fins/summary for outstanding shares
+    try:
+        summary_data = _jquants_get("/fins/summary", {"code": code})
+        summary_records = (
+            summary_data.get("data")
+            or summary_data.get("fs_summary")
+            or summary_data.get("statements")
+            or summary_data.get("fins_summary")
+            or []
+        )
+        if not summary_records and isinstance(summary_data, list):
+            summary_records = summary_data
+        summary_records.sort(key=lambda r: r.get("DiscDate", ""), reverse=True)
+
+        os_shares = 0.0
+        for srec in summary_records:
+            val = srec.get("NumberOfIssuedAndOutstandingSharesAtTheEndOfFiscalYearIncludingTreasuryStock")
+            if val is None:
+                val = srec.get("NumSharesOutstanding")
+            if val is not None:
+                try:
+                    os_shares = float(val)
+                    if os_shares > 0:
+                        break
+                except (ValueError, TypeError):
+                    pass
+        result["os_shares"] = os_shares
+    except Exception as e:
+        result["os_shares"] = 0.0
+        errors.append(f"fins/summary: {e}")
+
+    if errors:
+        result["errors"] = errors
+    return result
 
 
 @app.get("/api/debug/adv")
