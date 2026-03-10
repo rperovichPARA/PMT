@@ -958,12 +958,12 @@ public class MainWindow {
         LineChart<Number, Number> chart = new LineChart<>(xAxis, yAxis);
         chart.setTitle(String.format("%s — Cash: %.1fmm | Min: %.1fmm | End: %.1fmm",
                 resp.getFund(), resp.getCurrentCashMm(), resp.getMinCashMm(), resp.getEndingCashMm()));
-        chart.setMinHeight(150);
-        chart.setPrefHeight(Region.USE_COMPUTED_SIZE);
+        chart.setMinHeight(100);
+        chart.setPrefHeight(Integer.MAX_VALUE);
         chart.setMaxHeight(Double.MAX_VALUE);
         chart.setCreateSymbols(false);
         chart.setAnimated(false);
-        chart.setLegendVisible(true);
+        chart.setLegendVisible(false);
         VBox.setVgrow(chart, Priority.ALWAYS);
 
         // Aggregate cash position line (cumulative, reflects all buys and sells)
@@ -997,23 +997,10 @@ public class MainWindow {
             tradeSeries.getNode().setStyle("-fx-stroke-width: 1px; -fx-opacity: 0.7;");
         }
 
-        // --- Trade breakdown summary below the chart ---
-        VBox tradeInfo = new VBox(2);
-        tradeInfo.setPadding(new Insets(2, 8, 4, 8));
-        for (CashPathSeries s : resp.getSeries()) {
-            double totalImpact = s.getValues().stream().mapToDouble(Double::doubleValue).sum();
-            int numDays = s.getDays().stream().mapToInt(Integer::intValue).max().orElse(0);
-            String arrow = totalImpact >= 0 ? "\u2191" : "\u2193";  // up/down arrow
-            String color = totalImpact >= 0 ? "#008800" : "#cc0000";
-            Label lbl = new Label(String.format("  %s %s: %.2fmm over %d days (%s)",
-                    arrow, s.getSymbol(), totalImpact, numDays, s.getTradeType()));
-            lbl.setStyle(String.format("-fx-font-size: 11px; -fx-text-fill: %s;", color));
-            tradeInfo.getChildren().add(lbl);
-        }
-
-        VBox wrapper = new VBox(4, chart, tradeInfo);
-        wrapper.setPadding(new Insets(4, 0, 4, 0));
+        VBox wrapper = new VBox(0, chart);
+        wrapper.setPadding(new Insets(0));
         VBox.setVgrow(chart, Priority.ALWAYS);
+        VBox.setVgrow(wrapper, Priority.ALWAYS);
         return wrapper;
     }
 
