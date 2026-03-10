@@ -146,10 +146,21 @@ class PortfolioManager(QMainWindow):
         self._tab_widget.addTab(tab1, "Current Portfolio")
 
         # --- Tab 2: Subscription/Redemption ---
-        from .sub_red_tab import SubscriptionRedemptionTab
+        try:
+            from .sub_red_tab import SubscriptionRedemptionTab
 
-        self._sub_red_tab = SubscriptionRedemptionTab(self)
-        self._tab_widget.addTab(self._sub_red_tab, "Subscription/Redemption")
+            self._sub_red_tab = SubscriptionRedemptionTab(self)
+            self._tab_widget.addTab(self._sub_red_tab, "Subscription/Redemption")
+        except Exception as exc:
+            import traceback
+
+            traceback.print_exc()
+            err_widget = QWidget()
+            err_layout = QVBoxLayout(err_widget)
+            err_layout.addWidget(
+                QLabel(f"Failed to load Subscription/Redemption tab:\n{exc}")
+            )
+            self._tab_widget.addTab(err_widget, "Subscription/Redemption (Error)")
 
     def _build_menu_bar(self) -> None:
         mb = self.menuBar()
