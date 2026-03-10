@@ -929,14 +929,15 @@ public class MainWindow {
         bottomSplit.getItems().clear();
 
         if (cashPathVisible) {
-            // Stack filings (if visible) + trades on the left
-            VBox leftColumn = new VBox(4);
+            // Stack filings (if visible) + trades on the left in a resizable SplitPane
+            SplitPane leftColumn = new SplitPane();
+            leftColumn.setOrientation(Orientation.VERTICAL);
             if (filingsVisible) {
-                VBox.setVgrow(filingsPanel, Priority.NEVER);
-                leftColumn.getChildren().add(filingsPanel);
+                leftColumn.getItems().addAll(filingsPanel, tradesPanel);
+                leftColumn.setDividerPositions(0.25);
+            } else {
+                leftColumn.getItems().add(tradesPanel);
             }
-            VBox.setVgrow(tradesPanel, Priority.ALWAYS);
-            leftColumn.getChildren().add(tradesPanel);
 
             ScrollPane chartScroll = new ScrollPane(cashPathPanel);
             chartScroll.setFitToWidth(true);
@@ -1059,14 +1060,17 @@ public class MainWindow {
     private void updateTradesTable(List<ExecutionData> trades) {
         tradesData.setAll(trades);
 
-        // Update net total
-        double net = trades.stream().mapToDouble(ExecutionData::getTradeValueSigned).sum();
+        // Update net total (cash perspective: sells raise cash, buys spend cash)
+        // trade_value_signed is +ve for buys, -ve for sells, so negate for cash impact
+        double cashImpact = -trades.stream().mapToDouble(ExecutionData::getTradeValueSigned).sum();
         Label netLabel = (Label) root.lookup("#netTotalLabel");
         if (netLabel != null) {
-            netLabel.setText(String.format("Net Total: %s USD", formatNumber(net)));
-            if (net > 0) {
+            netLabel.setText(String.format("Net Total: %s USD", formatNumber(cashImpact)));
+            if (cashImpact > 0) {
+                // Net sells > buys → raising cash → green
                 netLabel.setStyle("-fx-font-weight: bold; -fx-text-fill: #008800;");
-            } else if (net < 0) {
+            } else if (cashImpact < 0) {
+                // Net buys > sells → cash drawdown → red
                 netLabel.setStyle("-fx-font-weight: bold; -fx-text-fill: #cc0000;");
             } else {
                 netLabel.setStyle("-fx-font-weight: bold;");
