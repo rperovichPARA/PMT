@@ -153,6 +153,7 @@ class ExecutionOut(BaseModel):
     key: str
     fund: str
     symbol: str
+    name: str
     trade_type: str
     trade_quantity: float
     target_raw: float
@@ -494,10 +495,14 @@ def submit_trade(req: SubmitTradeRequest):
 def list_trades():
     result = []
     for key, ex in _state["proposed_executions"].items():
+        # Look up security name from portfolio
+        pos = _state["portfolio"].get(ex.symbol)
+        sec_name = pos.name if pos else ex.symbol
         result.append(ExecutionOut(
             key=key,
             fund=ex.fund,
             symbol=ex.symbol,
+            name=sec_name,
             trade_type=ex.trade_type,
             trade_quantity=ex.trade_quantity,
             target_raw=ex.target_raw,

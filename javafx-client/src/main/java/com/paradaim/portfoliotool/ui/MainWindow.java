@@ -186,7 +186,6 @@ public class MainWindow {
         toolbar.setAlignment(Pos.CENTER_LEFT);
 
         Button importBtn = new Button("Import Portfolio");
-        importBtn.getStyleClass().add("primary");
         importBtn.setOnAction(e -> importPortfolio());
 
         Button tradeBtn = new Button("Create Trade");
@@ -253,11 +252,13 @@ public class MainWindow {
         priceCol.setCellValueFactory(new PropertyValueFactory<>("priceDisplay"));
         priceCol.setPrefWidth(100);
         priceCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+        priceCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
         TableColumn<PositionRow, String> pctCol = new TableColumn<>("% of Company");
         pctCol.setCellValueFactory(new PropertyValueFactory<>("pctOfCompanyDisplay"));
         pctCol.setPrefWidth(100);
         pctCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+        pctCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
         portfolioTable.getColumns().addAll(symbolCol, nameCol, priceCol, pctCol);
 
@@ -288,6 +289,7 @@ public class MainWindow {
         col.setCellValueFactory(new PropertyValueFactory<>(property));
         col.setPrefWidth(width);
         col.setStyle("-fx-alignment: CENTER-RIGHT;");
+        col.setComparator(NUMERIC_STRING_COMPARATOR);
 
         col.setCellFactory(column -> new TableCell<>() {
             @Override
@@ -373,6 +375,7 @@ public class MainWindow {
             });
             currCol.setPrefWidth(60);
             currCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+            currCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
             TableColumn<PositionRow, String> newCol = new TableColumn<>("New");
             newCol.setCellValueFactory(cd -> {
@@ -381,6 +384,7 @@ public class MainWindow {
             });
             newCol.setPrefWidth(60);
             newCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+            newCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
             // Color "New" column cells based on trade direction
             newCol.setCellFactory(col -> new TableCell<>() {
@@ -449,6 +453,7 @@ public class MainWindow {
             return new SimpleStringProperty(lf != null ? String.format("%.2f%%", lf * 100) : "-");
         });
         lastCol.setPrefWidth(80);
+        lastCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
         TableColumn<FilingData, String> upCol = new TableColumn<>("To Upward");
         upCol.setCellValueFactory(cd -> {
@@ -456,6 +461,7 @@ public class MainWindow {
             return new SimpleStringProperty(val != null ? String.format("%.2f%%", val * 100) : "-");
         });
         upCol.setPrefWidth(75);
+        upCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
         TableColumn<FilingData, String> downCol = new TableColumn<>("To Downward");
         downCol.setCellValueFactory(cd -> {
@@ -463,6 +469,7 @@ public class MainWindow {
             return new SimpleStringProperty(val != null ? String.format("%.2f%%", val * 100) : "-");
         });
         downCol.setPrefWidth(80);
+        downCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
         filingsTable.getColumns().addAll(symCol, nameCol, dateCol, lastCol, upCol, downCol);
 
@@ -484,7 +491,6 @@ public class MainWindow {
         Button editPriceBtn = new Button("Edit Target Price");
         editPriceBtn.setOnAction(e -> editTargetPrice());
         Button deleteBtn = new Button("Delete Trade");
-        deleteBtn.getStyleClass().add("danger");
         deleteBtn.setOnAction(e -> deleteTrade());
         cashPathBtn = new Button("Show Cash Path");
         cashPathBtn.setOnAction(e -> toggleCashPath());
@@ -516,6 +522,10 @@ public class MainWindow {
             }
         });
 
+        TableColumn<ExecutionData, String> nameCol = new TableColumn<>("Name");
+        nameCol.setCellValueFactory(new PropertyValueFactory<>("name"));
+        nameCol.setPrefWidth(120);
+
         TableColumn<ExecutionData, String> fundCol = new TableColumn<>("Fund");
         fundCol.setCellValueFactory(new PropertyValueFactory<>("fund"));
         fundCol.setPrefWidth(70);
@@ -529,18 +539,21 @@ public class MainWindow {
             new SimpleStringProperty(formatNumber(cd.getValue().getTradeQuantity())));
         qtyCol.setPrefWidth(80);
         qtyCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+        qtyCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
         TableColumn<ExecutionData, String> usdCol = new TableColumn<>("USD Value");
         usdCol.setCellValueFactory(cd ->
             new SimpleStringProperty(formatNumber(cd.getValue().getTradeValueUsd()) + " USD"));
         usdCol.setPrefWidth(100);
         usdCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+        usdCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
         TableColumn<ExecutionData, String> daysCol = new TableColumn<>("Days");
         daysCol.setCellValueFactory(cd ->
             new SimpleStringProperty(String.format("%.1f", cd.getValue().getTradingDays())));
         daysCol.setPrefWidth(50);
         daysCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+        daysCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
         TableColumn<ExecutionData, String> tgtCol = new TableColumn<>("Target PX");
         tgtCol.setCellValueFactory(cd -> {
@@ -549,6 +562,7 @@ public class MainWindow {
         });
         tgtCol.setPrefWidth(80);
         tgtCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+        tgtCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
         TableColumn<ExecutionData, String> pctCol = new TableColumn<>("% to Curr");
         pctCol.setCellValueFactory(cd -> {
@@ -557,8 +571,9 @@ public class MainWindow {
         });
         pctCol.setPrefWidth(70);
         pctCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+        pctCol.setComparator(NUMERIC_STRING_COMPARATOR);
 
-        tradesTable.getColumns().addAll(typeCol, fundCol, symCol, qtyCol, usdCol, daysCol, tgtCol, pctCol);
+        tradesTable.getColumns().addAll(typeCol, nameCol, fundCol, symCol, qtyCol, usdCol, daysCol, tgtCol, pctCol);
 
         // Net total label
         Label netLabel = new Label("Net Total: -");
@@ -1205,6 +1220,31 @@ public class MainWindow {
 
     private static String formatNumber(double value) {
         return NumberFormat.getIntegerInstance().format((long) value);
+    }
+
+    /**
+     * Comparator for table columns that display numeric values as strings.
+     * Strips non-numeric chars (commas, %, 'x', 'USD', spaces) and parses as double.
+     * Nulls, blanks, and "-" sort to the end.
+     */
+    private static final Comparator<String> NUMERIC_STRING_COMPARATOR = (a, b) -> {
+        Double da = parseNumeric(a);
+        Double db = parseNumeric(b);
+        if (da == null && db == null) return 0;
+        if (da == null) return 1;
+        if (db == null) return -1;
+        return Double.compare(da, db);
+    };
+
+    private static Double parseNumeric(String s) {
+        if (s == null || s.isBlank() || "-".equals(s.trim())) return null;
+        try {
+            String cleaned = s.replaceAll("[^\\d.\\-eE]", "");
+            if (cleaned.isEmpty()) return null;
+            return Double.parseDouble(cleaned);
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     /**
