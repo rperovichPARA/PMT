@@ -272,6 +272,10 @@ def _recompute_weights() -> None:
                     total_value += value_jpy
                     securities_count += 1
 
+                # Recalculate % of company from os_shares whenever available
+                if pos.os_shares > 0 and not pos.is_cash:
+                    fp.pct_of_company = fp.quantity / pos.os_shares
+
         avg_weight = 100.0 / securities_count if securities_count > 0 else 0.0
 
         for pos in portfolio.values():
