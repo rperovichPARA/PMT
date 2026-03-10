@@ -91,7 +91,6 @@ _state: dict[str, Any] = {
     "usd_jpy_rate": 0.0,
     "filings": {},             # dict[str, FilingRecord]
     "proposed_executions": {}, # dict[str, ProposedExecution]
-    "use_yfinance": False,
     "metrics": {},             # dict[str, dict] – per-symbol metrics from /fins/details
     "new_positions": set(),    # set[str] – symbols added via Add Position dialog
 }

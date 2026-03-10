@@ -338,8 +338,6 @@ class SubscriptionRedemptionTab(QWidget):
         self.portfolio: dict[str, Position] = {}
         self.usd_jpy_rate: float = 0.0
         self.fund_names: list[str] = []
-        self.use_yfinance_pricing = False
-
         # Schedule results
         self._schedule: list[dict] = []
         self._schedule_direction: str = ""
@@ -449,7 +447,7 @@ class SubscriptionRedemptionTab(QWidget):
 
         progress = self._make_progress("Importing portfolio data...", 100)
 
-        self._import_worker = PortfolioImportWorker(path, self.use_yfinance_pricing)
+        self._import_worker = PortfolioImportWorker(path)
         self._import_worker.progress_updated.connect(
             lambda v, s: self._update_progress(progress, v, s)
         )

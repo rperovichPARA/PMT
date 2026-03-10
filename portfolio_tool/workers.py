@@ -5,11 +5,71 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
+import requests as http_requests
+
 import pandas as pd
-import yfinance as yf
 from PyQt5.QtCore import QThread, pyqtSignal
 
 from .models import FilingRecord, FundPosition, Position
+
+
+# ---------------------------------------------------------------------------
+# J-Quants V2 API helpers (mirrors api_server.py)
+# ---------------------------------------------------------------------------
+
+_JQUANTS_API_KEY = "IsSPKDgnOojzoMEjBGhivJuw7_c9FBPlPDzt4iuYPdc"
+_JQUANTS_BASE_URL = "https://api.jquants.com/v2"
+
+
+def _jquants_get(path: str, params: dict | None = None) -> dict:
+    """Make an authenticated GET request to J-Quants V2 API."""
+    resp = http_requests.get(
+        f"{_JQUANTS_BASE_URL}{path}",
+        headers={"x-api-key": _JQUANTS_API_KEY},
+        params=params or {},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _fetch_usd_jpy_rate() -> float | None:
+    """Fetch current USD/JPY rate from a public API."""
+    try:
+        resp = http_requests.get(
+            "https://api.exchangerate-api.com/v4/latest/USD",
+            timeout=10,
+        )
+        resp.raise_for_status()
+        rate = resp.json().get("rates", {}).get("JPY")
+        if rate and float(rate) > 1.0:
+            return float(rate)
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_jquants_price(symbol: str) -> float:
+    """Fetch the latest closing price for a TSE stock from J-Quants."""
+    try:
+        code = symbol if len(symbol) >= 5 else f"{symbol}0"
+        from datetime import timedelta
+        end = datetime.now()
+        start = end - timedelta(days=10)
+        data = _jquants_get("/equities/bars/daily", {
+            "code": code,
+            "from": start.strftime("%Y-%m-%d"),
+            "to": end.strftime("%Y-%m-%d"),
+        })
+        bars = data.get("daily_quotes", [])
+        if bars:
+            last_bar = bars[-1]
+            price = last_bar.get("Close") or last_bar.get("AdjustmentClose")
+            if price is not None:
+                return float(price)
+    except Exception:
+        pass
+    return 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -17,19 +77,14 @@ from .models import FilingRecord, FundPosition, Position
 # ---------------------------------------------------------------------------
 
 class ExchangeRateWorker(QThread):
-    """Fetch USD/JPY from Yahoo Finance in the background."""
+    """Fetch USD/JPY from a free FX API in the background."""
 
     rate_updated = pyqtSignal(float)
 
     def run(self) -> None:
-        try:
-            ticker = yf.Ticker("USDJPY=X")
-            info = ticker.info
-            price = info.get("regularMarketPrice")
-            if price is not None:
-                self.rate_updated.emit(float(price))
-        except Exception:
-            pass  # silently degrade; UI keeps the last known rate
+        rate = _fetch_usd_jpy_rate()
+        if rate is not None:
+            self.rate_updated.emit(rate)
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +92,7 @@ class ExchangeRateWorker(QThread):
 # ---------------------------------------------------------------------------
 
 class PriceRefreshWorker(QThread):
-    """Refresh live prices for all non-cash positions."""
+    """Refresh live prices for all non-cash positions via J-Quants."""
 
     price_updated = pyqtSignal(str, float)
     progress_updated = pyqtSignal(int, str)
@@ -54,14 +109,9 @@ class PriceRefreshWorker(QThread):
             total = len(self.portfolio)
             # Exchange rate first
             self.progress_updated.emit(0, "Fetching USD/JPY exchange rate...")
-            try:
-                ticker = yf.Ticker("USDJPY=X")
-                info = ticker.info
-                price = info.get("regularMarketPrice")
-                if price is not None:
-                    self.price_updated.emit("USD/JPY", float(price))
-            except Exception:
-                pass
+            rate = _fetch_usd_jpy_rate()
+            if rate is not None:
+                self.price_updated.emit("USD/JPY", rate)
 
             for symbol, position in self.portfolio.items():
                 if symbol == "JPY":
@@ -76,15 +126,9 @@ class PriceRefreshWorker(QThread):
                         int(count / max(total, 1) * 100),
                         f"Fetching price for {symbol} ({count + 1}/{total})...",
                     )
-                    try:
-                        fetch_symbol = f"{symbol}.T"
-                        ticker = yf.Ticker(fetch_symbol)
-                        info = ticker.info
-                        price = info.get("regularMarketPrice")
-                        if price is not None:
-                            self.price_updated.emit(symbol, float(price))
-                    except Exception:
-                        pass
+                    price = _fetch_jquants_price(symbol)
+                    if price > 0:
+                        self.price_updated.emit(symbol, price)
                 count += 1
 
             self.progress_updated.emit(100, "Price refresh complete")
@@ -104,10 +148,9 @@ class PortfolioImportWorker(QThread):
     import_completed = pyqtSignal(dict, list, float)  # portfolio, fund_names, usd_jpy_rate
     import_error = pyqtSignal(str)
 
-    def __init__(self, file_path: str, use_yfinance: bool, parent=None) -> None:
+    def __init__(self, file_path: str, parent=None) -> None:
         super().__init__(parent)
         self.file_path = file_path
-        self.use_yfinance = use_yfinance
 
     def run(self) -> None:
         try:
@@ -129,9 +172,9 @@ class PortfolioImportWorker(QThread):
             has_os = "OS" in df.columns
             has_pct = "% of Company" in df.columns
 
-            if not has_price and not self.use_yfinance:
+            if not has_price:
                 self.import_error.emit(
-                    "Price column not found and YFinance pricing is disabled"
+                    "Price column not found in Excel file"
                 )
                 return
 
@@ -181,8 +224,6 @@ class PortfolioImportWorker(QThread):
                         usd_jpy_rate = price
                 elif is_cash:
                     price = 1.0
-                elif self.use_yfinance:
-                    price = self._fetch_yfinance_price(symbol)
 
                 if symbol not in portfolio:
                     portfolio[symbol] = Position(
@@ -206,15 +247,6 @@ class PortfolioImportWorker(QThread):
         except Exception as exc:
             self.import_error.emit(f"Error importing portfolio: {exc}")
 
-    @staticmethod
-    def _fetch_yfinance_price(symbol: str) -> float:
-        try:
-            ticker = yf.Ticker(f"{symbol}.T")
-            info = ticker.info
-            price = info.get("regularMarketPrice")
-            return float(price) if price is not None else 0.0
-        except Exception:
-            return 0.0
 
 
 # ---------------------------------------------------------------------------
