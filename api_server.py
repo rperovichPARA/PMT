@@ -92,7 +92,7 @@ _state: dict[str, Any] = {
     "filings": {},             # dict[str, FilingRecord]
     "proposed_executions": {}, # dict[str, ProposedExecution]
     "use_yfinance": False,
-    "metrics": {},             # dict[str, dict] – per-symbol metrics from /fins/summary
+    "metrics": {},             # dict[str, dict] – per-symbol metrics from /fins/details
 }
 
 
@@ -720,9 +720,9 @@ def refresh_prices():
         })
         return {"symbol": symbol, "data": data}
 
-    # Fetch all symbols in parallel
+    # Fetch all symbols in parallel (Premium rate limits allow higher concurrency)
     results: list[dict] = []
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=20) as pool:
         futures = {pool.submit(_fetch_price, s): s for s in symbols}
         for future in as_completed(futures):
             sym = futures[future]
@@ -791,7 +791,7 @@ def refresh_prices():
 
 @app.post("/api/metrics/refresh")
 def refresh_metrics():
-    """Refresh fundamental metrics using J-Quants V2 /fins/summary and /indices/bars/daily/topix."""
+    """Refresh fundamental metrics using J-Quants V2 Premium /fins/details and /indices/bars/daily/topix."""
     import numpy as np
 
     portfolio = _state["portfolio"]
@@ -801,8 +801,6 @@ def refresh_metrics():
 
     today = datetime.now()
     date_to = today.strftime("%Y%m%d")
-    # ~3 years of data for CAGR and beta calculations
-    date_from_3y = (today - timedelta(days=3 * 365)).strftime("%Y%m%d")
     # 1 year for beta
     date_from_1y = (today - timedelta(days=365)).strftime("%Y%m%d")
 
@@ -835,19 +833,19 @@ def refresh_metrics():
     except Exception as e:
         print(f"  TOPIX fetch error: {e}")
 
-    # ---- Parallel fetch: statements + stock bars for all symbols ----
+    # ---- Parallel fetch: fins/details + stock bars for all symbols ----
     def _fetch_symbol_data(symbol: str) -> dict:
         code = f"{symbol}0"
-        stmt_data = _jquants_get("/fins/summary", {"code": code})
+        detail_data = _jquants_get("/fins/details", {"code": code})
         stock_data = _jquants_get("/equities/bars/daily", {
             "code": code,
             "from": date_from_1y,
             "to": date_to,
         })
-        return {"symbol": symbol, "stmt_data": stmt_data, "stock_data": stock_data}
+        return {"symbol": symbol, "detail_data": detail_data, "stock_data": stock_data}
 
     prefetched: dict[str, dict] = {}
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=20) as pool:
         futures = {pool.submit(_fetch_symbol_data, s): s for s in symbols}
         for future in as_completed(futures):
             sym = futures[future]
@@ -857,15 +855,6 @@ def refresh_metrics():
                 print(f"  {sym}: ERROR fetching data: {e}")
                 errors.append(f"{sym}: {e}")
 
-    # Helper to safely parse string -> float
-    def _pf(val) -> float | None:
-        if val is None or val == "":
-            return None
-        try:
-            return float(val)
-        except (ValueError, TypeError):
-            return None
-
     for symbol in symbols:
         if symbol not in prefetched:
             continue
@@ -874,170 +863,148 @@ def refresh_metrics():
         m: dict[str, Any] = {}
 
         try:
-            # ---- Use pre-fetched financial summary (Standard plan endpoint) ----
-            stmt_data = fetched["stmt_data"]
-            stmts = stmt_data.get("data") or stmt_data.get("statements") or []
-            if not stmts:
-                print(f"  {symbol}: no statements data")
-                errors.append(f"{symbol}: no statements")
+            # ---- Parse /fins/details (Premium endpoint with full BS/PL/CF) ----
+            detail_data = fetched["detail_data"]
+            records = detail_data.get("data") or detail_data.get("fs_details") or []
+            if not records:
+                print(f"  {symbol}: no fins/details data")
+                errors.append(f"{symbol}: no details")
                 continue
 
-            # Sort by disclosed date descending to get most recent first
-            stmts.sort(key=lambda s: s.get("DiscDate", ""), reverse=True)
+            # Sort by disclosed date descending (most recent first)
+            records.sort(key=lambda r: r.get("DiscDate", ""), reverse=True)
 
-            # Get the latest annual/full-year statement for result data
-            # CurPerType: "FY" = full year, "3Q", "2Q", "1Q"
-            latest_stmt = stmts[0]  # most recent disclosure
+            # Parse each record into a normalised dict with DocType metadata
+            parsed_records = []
+            for rec in records:
+                doc_type = rec.get("DocType", "")
+                fs = rec.get("FS") or {}
+                norm = _extract_fs_values(fs)
+                # Determine period type from DocType (e.g. "FYFinancialStatements_...")
+                period_type = _parse_period_type(doc_type)
+                norm["_period_type"] = period_type
+                norm["_disc_date"] = rec.get("DiscDate", "")
+                norm["_doc_type"] = doc_type
+                # Extract fiscal year end from DEI if available
+                fy_end = fs.get("Current fiscal year end date, DEI") or fs.get("Current period end date, DEI") or ""
+                norm["_fy_end"] = fy_end
+                parsed_records.append(norm)
 
-            # Find latest FY statement for result metrics
-            fy_stmt = None
-            for s in stmts:
-                if s.get("CurPerType") == "FY":
-                    fy_stmt = s
-                    break
+            latest = parsed_records[0]
 
-            # Use latest statement that has forecast data
-            forecast_stmt = None
-            for s in stmts:
-                if _pf(s.get("FEPS")) is not None:
-                    forecast_stmt = s
+            # Find latest FY record
+            fy_record = None
+            for pr in parsed_records:
+                if pr["_period_type"] == "FY":
+                    fy_record = pr
                     break
 
             price = position.price
+            os_shares = position.os_shares
 
-            # ---- BPS (BookValuePerShare) -> PBR ----
-            bvps = None
-            for s in stmts:
-                bvps = _pf(s.get("BPS"))
-                if bvps is not None:
+            # ---- PBR: Price / (Equity / Shares) ----
+            equity = None
+            for pr in parsed_records:
+                if pr.get("equity") is not None:
+                    equity = pr["equity"]
                     break
-            if bvps and bvps > 0 and price > 0:
+            if equity and equity > 0 and os_shares > 0 and price > 0:
+                bvps = equity / os_shares
                 m["pbr"] = round(price / bvps, 2)
 
-            # ---- PE LTM: trailing 4 quarters of EPS ----
-            # Collect quarterly EPS values (most recent 4 quarters)
-            quarterly_eps = []
-            seen_periods = set()
-            for s in stmts:
-                period_end = s.get("CurPerEn", "")
-                period_type = s.get("CurPerType", "")
-                if period_end in seen_periods:
-                    continue
-                eps_val = _pf(s.get("EPS"))
-                if eps_val is not None and period_type in ("1Q", "2Q", "3Q", "FY"):
-                    quarterly_eps.append({"type": period_type, "eps": eps_val,
-                                          "end": period_end})
-                    seen_periods.add(period_end)
-                if len(quarterly_eps) >= 8:
-                    break
-
-            # For LTM EPS, take the most recent FY EPS or sum approach
-            # Simplest: if we have FY, use it. Otherwise cumulate.
-            ltm_eps = None
-            if fy_stmt:
-                ltm_eps = _pf(fy_stmt.get("EPS"))
-            if ltm_eps and ltm_eps > 0 and price > 0:
+            # ---- PE LTM: Price / (Net Income FY / Shares) ----
+            net_income_fy = fy_record.get("net_income") if fy_record else None
+            if net_income_fy and net_income_fy > 0 and os_shares > 0 and price > 0:
+                ltm_eps = net_income_fy / os_shares
                 m["pe_ltm"] = round(price / ltm_eps, 1)
 
-            # ---- PE NTM: FEPS (ForecastEarningsPerShare, current year) ----
-            forecast_eps = None
-            if forecast_stmt:
-                forecast_eps = _pf(forecast_stmt.get("FEPS"))
-            if forecast_eps and forecast_eps > 0 and price > 0:
-                m["pe_ntm"] = round(price / forecast_eps, 1)
-
-            # ---- PE 24M: Next-year forecast EPS ----
-            # Try NxFEPS (full-year), NxFEPS2Q (2Q), or derive from NxFNp / shares
-            next_yr_eps = None
-            for s in stmts:
-                next_yr_eps = _pf(s.get("NxFEPS")) or _pf(s.get("NxFEPS2Q"))
-                if next_yr_eps is not None:
+            # ---- PE NTM: use forecast net income if available in details ----
+            # /fins/details may include forecast sections in some filings
+            forecast_ni = None
+            for pr in parsed_records:
+                if pr.get("forecast_net_income") is not None:
+                    forecast_ni = pr["forecast_net_income"]
                     break
-            if next_yr_eps is None:
-                # Derive from NxFNp (next-year forecast net profit) / outstanding shares
-                for s in stmts:
-                    nyf_profit = _pf(s.get("NxFNp"))
-                    if nyf_profit is not None and position.os_shares > 0:
-                        next_yr_eps = nyf_profit / position.os_shares
-                        break
-            if next_yr_eps and next_yr_eps > 0 and price > 0:
+            if forecast_ni and forecast_ni > 0 and os_shares > 0 and price > 0:
+                feps = forecast_ni / os_shares
+                m["pe_ntm"] = round(price / feps, 1)
+
+            # ---- PE 24M: use next-year forecast if available ----
+            next_yr_ni = None
+            for pr in parsed_records:
+                if pr.get("next_yr_forecast_ni") is not None:
+                    next_yr_ni = pr["next_yr_forecast_ni"]
+                    break
+            if next_yr_ni and next_yr_ni > 0 and os_shares > 0 and price > 0:
+                next_yr_eps = next_yr_ni / os_shares
                 m["pe_24m"] = round(price / next_yr_eps, 1)
 
-            # ---- PEGc: PE NTM / EPS growth rate (historical) ----
-            # Compute EPS CAGR from historical data for PEGc
-            historical_eps = _collect_annual_values(stmts, "EPS", _pf)
-            eps_growth = _compute_cagr(historical_eps)
-            if m.get("pe_ntm") and eps_growth and eps_growth > 0:
-                m["peg_c"] = round(m["pe_ntm"] / (eps_growth * 100), 2)
+            # ---- EPS CAGR from historical FY data ----
+            historical_eps_vals = _collect_annual_values_details(parsed_records, "net_income", os_shares)
+            eps_growth = _compute_cagr(historical_eps_vals)
+
+            # ---- PEGc: PE LTM / EPS CAGR (historical) ----
+            pe_for_peg = m.get("pe_ntm") or m.get("pe_ltm")
+            if pe_for_peg and eps_growth and eps_growth > 0:
+                m["peg_c"] = round(pe_for_peg / (eps_growth * 100), 2)
 
             # ---- PEG n: PE 24M / next year EPS growth ----
-            if m.get("pe_24m") and forecast_eps and next_yr_eps and forecast_eps > 0:
-                next_yr_growth = (next_yr_eps - forecast_eps) / abs(forecast_eps)
+            if m.get("pe_24m") and forecast_ni and next_yr_ni and forecast_ni > 0:
+                next_yr_growth = (next_yr_ni - forecast_ni) / abs(forecast_ni)
                 if next_yr_growth > 0:
                     m["peg_n"] = round(m["pe_24m"] / (next_yr_growth * 100), 2)
 
-            # ---- ROE (l): NP (Net Profit) / Eq (Equity) ----
-            profit = None
-            equity = None
-            for s in stmts:
-                if profit is None:
-                    profit = _pf(s.get("NP"))
-                if equity is None:
-                    equity = _pf(s.get("Eq"))
-                if profit is not None and equity is not None:
+            # ---- ROE (l): Net Income / Equity ----
+            ni_for_roe = None
+            for pr in parsed_records:
+                if pr.get("net_income") is not None:
+                    ni_for_roe = pr["net_income"]
                     break
-            if profit is not None and equity and equity > 0:
-                m["roe_l"] = round(profit / equity * 100, 1)
+            if ni_for_roe is not None and equity and equity > 0:
+                m["roe_l"] = round(ni_for_roe / equity * 100, 1)
 
-            # ---- ROE NTM: FNP (Forecast Net Profit) / Equity ----
-            forecast_profit = None
-            if forecast_stmt:
-                forecast_profit = _pf(forecast_stmt.get("FNP"))
-            if forecast_profit is not None and equity and equity > 0:
-                m["roe_ntm"] = round(forecast_profit / equity * 100, 1)
+            # ---- ROE NTM: Forecast NI / Equity ----
+            if forecast_ni is not None and equity and equity > 0:
+                m["roe_ntm"] = round(forecast_ni / equity * 100, 1)
 
-            # ---- Plowback: 1 - PayoutRatioAnn ----
-            payout = None
-            for s in stmts:
-                payout = _pf(s.get("PayoutRatioAnn"))
-                if payout is not None:
+            # ---- Plowback & Payout: from dividends paid / net income ----
+            dividends_paid = None
+            for pr in parsed_records:
+                if pr.get("dividends_paid") is not None:
+                    dividends_paid = abs(pr["dividends_paid"])
                     break
-            if payout is not None:
-                # J-Quants returns payout as percentage (e.g. 30.5 for 30.5%)
-                payout_dec = payout / 100.0 if payout > 1.0 else payout
-                m["plowback"] = round(1.0 - payout_dec, 3)
-                m["payout_ratio"] = round(payout_dec * 100, 1)
+            if dividends_paid is not None and ni_for_roe and ni_for_roe > 0:
+                payout_dec = dividends_paid / ni_for_roe
+                if payout_dec <= 2.0:  # sanity check
+                    m["plowback"] = round(1.0 - payout_dec, 3)
+                    m["payout_ratio"] = round(payout_dec * 100, 1)
 
-            # ---- Div Yield: DivAnn (actual) or FDivAnn (forecast) / Price ----
-            div_annual = None
-            for s in stmts:
-                div_annual = _pf(s.get("DivAnn")) or _pf(s.get("FDivAnn"))
-                if div_annual is not None:
-                    break
-            if div_annual is not None and price > 0:
-                m["div_yield"] = round(div_annual / price * 100, 2)
+            # ---- Div Yield: Dividends Paid / Market Cap ----
+            if dividends_paid is not None and os_shares > 0 and price > 0:
+                div_per_share = dividends_paid / os_shares
+                m["div_yield"] = round(div_per_share / price * 100, 2)
 
-            # ---- OPM: OP (Operating Profit) / Sales ----
+            # ---- OPM: Operating Profit / Net Sales ----
             op_profit = None
             net_sales = None
-            for s in stmts:
-                if op_profit is None:
-                    op_profit = _pf(s.get("OP"))
-                if net_sales is None:
-                    net_sales = _pf(s.get("Sales"))
+            for pr in parsed_records:
+                if op_profit is None and pr.get("operating_profit") is not None:
+                    op_profit = pr["operating_profit"]
+                if net_sales is None and pr.get("net_sales") is not None:
+                    net_sales = pr["net_sales"]
                 if op_profit is not None and net_sales is not None:
                     break
             if op_profit is not None and net_sales and net_sales > 0:
                 m["opm"] = round(op_profit / net_sales * 100, 1)
 
             # ---- 2Y Sales CAGR ----
-            historical_sales = _collect_annual_values(stmts, "Sales", _pf)
+            historical_sales = _collect_annual_values_details(parsed_records, "net_sales")
             sales_cagr = _compute_cagr(historical_sales)
             if sales_cagr is not None:
                 m["sales_cagr_2y"] = round(sales_cagr * 100, 1)
 
             # ---- 2Y Op CAGR ----
-            historical_op = _collect_annual_values(stmts, "OP", _pf)
+            historical_op = _collect_annual_values_details(parsed_records, "operating_profit")
             op_cagr = _compute_cagr(historical_op)
             if op_cagr is not None:
                 m["op_cagr_2y"] = round(op_cagr * 100, 1)
@@ -1051,7 +1018,6 @@ def refresh_metrics():
                 try:
                     stock_bars = fetched["stock_data"].get("data") or fetched["stock_data"].get("eq_bars_daily") or []
                     if stock_bars:
-                        # Build date->close map for the stock
                         stock_closes_by_date: dict[str, float] = {}
                         for bar in stock_bars:
                             dt = bar.get("Date", "")
@@ -1062,14 +1028,12 @@ def refresh_metrics():
                                 except (ValueError, TypeError):
                                     pass
 
-                        # Align on common dates (reuse cached TOPIX data)
                         common_dates = sorted(set(stock_closes_by_date.keys()) & set(topix_closes_by_date.keys()))
                         if len(common_dates) >= 30:
                             s_prices = np.array([stock_closes_by_date[d] for d in common_dates])
                             t_prices = np.array([topix_closes_by_date[d] for d in common_dates])
                             s_ret = (s_prices[1:] - s_prices[:-1]) / s_prices[:-1]
                             t_ret = (t_prices[1:] - t_prices[:-1]) / t_prices[:-1]
-                            # Beta = Cov(stock, market) / Var(market)
                             cov = np.cov(s_ret, t_ret)
                             if cov[1, 1] > 0:
                                 beta_val = cov[0, 1] / cov[1, 1]
@@ -1086,30 +1050,171 @@ def refresh_metrics():
             errors.append(f"{symbol}: {e}")
 
     _recompute_weights()
-    msg = f"Updated metrics for {updated} positions (J-Quants V2)"
+    msg = f"Updated metrics for {updated} positions (J-Quants V2 Premium /fins/details)"
     if errors:
         msg += f" | {len(errors)} errors"
     print(f"Metrics refresh complete: {msg}")
     return {"message": msg, "errors": errors}
 
 
-def _collect_annual_values(
-    stmts: list[dict], field: str, parse_fn
+# ---------------------------------------------------------------------------
+# EDINET label pattern matching for /fins/details FS dict
+# ---------------------------------------------------------------------------
+
+# Patterns to search for in FS dict keys (case-insensitive substring match).
+# Order matters: first match wins, so put more specific patterns first.
+_FS_LABEL_MAP: list[tuple[str, list[str]]] = [
+    # Balance sheet
+    ("total_assets", [
+        "total assets",
+    ]),
+    ("equity", [
+        "shareholders' equity",
+        "shareholders equity",
+        "equity attributable to owners of parent",
+        "total equity",
+        "net assets",
+    ]),
+    # Income statement
+    ("net_sales", [
+        "net sales",
+        "revenue",
+        "operating revenue",
+    ]),
+    ("operating_profit", [
+        "operating profit",
+        "operating income",
+    ]),
+    ("ordinary_profit", [
+        "ordinary profit",
+        "ordinary income",
+    ]),
+    ("net_income", [
+        "profit attributable to owners of parent",
+        "profit (loss) attributable to owners of parent",
+        "net income attributable",
+        "profit for the period attributable to owners of parent",
+        "net income",
+        "profit for the period",
+        "profit (loss)",
+    ]),
+    # Cash flow
+    ("cfo", [
+        "cash flows from operating",
+        "net cash provided by operating",
+    ]),
+    ("cfi", [
+        "cash flows from investing",
+        "net cash used in investing",
+    ]),
+    ("cff", [
+        "cash flows from financing",
+        "net cash used in financing",
+    ]),
+    ("dividends_paid", [
+        "dividends paid",
+        "cash dividends paid",
+    ]),
+    # Per-share (sometimes in details)
+    ("eps_detail", [
+        "basic earnings per share",
+        "earnings per share",
+    ]),
+    ("bps_detail", [
+        "book value per share",
+        "net assets per share",
+    ]),
+    # Forecast (some filings embed forecasts)
+    ("forecast_net_income", [
+        "forecast of net income",
+        "forecast of profit attributable",
+        "forecast net income",
+        "forecast profit",
+    ]),
+    ("forecast_sales", [
+        "forecast of net sales",
+        "forecast of revenue",
+        "forecast net sales",
+        "forecast revenue",
+    ]),
+    ("next_yr_forecast_ni", [
+        "next fiscal year forecast of net income",
+        "next fiscal year forecast of profit",
+        "next year forecast net income",
+    ]),
+]
+
+
+def _extract_fs_values(fs: dict) -> dict[str, float | None]:
+    """Extract normalised financial values from an EDINET FS dict.
+
+    The FS dict has verbose EDINET labels as keys (English) and string values.
+    We match labels case-insensitively against known patterns.
+    """
+    result: dict[str, float | None] = {}
+    if not fs:
+        return result
+
+    # Build lowercase key->value map, parsing numeric values
+    lc_items: list[tuple[str, float]] = []
+    for key, val in fs.items():
+        if val is None or isinstance(val, dict):
+            continue
+        try:
+            fval = float(str(val).replace(",", ""))
+            lc_items.append((key.lower(), fval))
+        except (ValueError, TypeError):
+            pass
+
+    matched_concepts: set[str] = set()
+    for concept, patterns in _FS_LABEL_MAP:
+        if concept in matched_concepts:
+            continue
+        for pattern in patterns:
+            for lc_key, fval in lc_items:
+                if pattern in lc_key:
+                    result[concept] = fval
+                    matched_concepts.add(concept)
+                    break
+            if concept in matched_concepts:
+                break
+
+    return result
+
+
+def _parse_period_type(doc_type: str) -> str:
+    """Extract period type (FY, 3Q, 2Q, 1Q) from DocType string."""
+    dt_upper = doc_type.upper()
+    if dt_upper.startswith("FY") or "ANNUAL" in dt_upper:
+        return "FY"
+    if dt_upper.startswith("3Q") or "THIRDQUARTER" in dt_upper:
+        return "3Q"
+    if dt_upper.startswith("2Q") or "SECONDQUARTER" in dt_upper or "INTERIM" in dt_upper:
+        return "2Q"
+    if dt_upper.startswith("1Q") or "FIRSTQUARTER" in dt_upper:
+        return "1Q"
+    return "OTHER"
+
+
+def _collect_annual_values_details(
+    parsed_records: list[dict], field: str,
+    divide_by_shares: float = 0.0,
 ) -> list[tuple[str, float]]:
-    """Collect (fiscal_year_end, value) pairs from FY statements for CAGR calculation."""
+    """Collect (fiscal_year_end, value) pairs from FY records for CAGR calculation."""
     values = []
-    seen_years = set()
-    for s in stmts:
-        if s.get("CurPerType") != "FY":
+    seen_years: set[str] = set()
+    for pr in parsed_records:
+        if pr.get("_period_type") != "FY":
             continue
-        fy_end = s.get("CurFYEn", "")
-        if fy_end in seen_years:
+        fy_end = pr.get("_fy_end", "")
+        if not fy_end or fy_end in seen_years:
             continue
-        val = parse_fn(s.get(field))
+        val = pr.get(field)
         if val is not None and val > 0:
+            if divide_by_shares > 0:
+                val = val / divide_by_shares
             values.append((fy_end, val))
             seen_years.add(fy_end)
-    # Sort oldest first
     values.sort(key=lambda x: x[0])
     return values
 
@@ -1179,6 +1284,33 @@ def debug_jquants(symbol: str):
             "all_field_names": list(bars[0].keys()) if bars else [],
             "raw_response": data if not bars else None,
         }
+    except Exception as e:
+        return {"code": code, "error": str(e)}
+
+
+@app.get("/api/debug/jquants/details/{symbol}")
+def debug_jquants_details(symbol: str):
+    """Inspect raw /fins/details response for a single stock."""
+    code = f"{symbol}0"
+    try:
+        data = _jquants_get("/fins/details", {"code": code})
+        records = data.get("data") or data.get("fs_details") or []
+        result = {
+            "code": code,
+            "raw_keys": list(data.keys()),
+            "num_records": len(records),
+        }
+        if records:
+            # Show latest record's structure
+            latest = records[0]
+            fs = latest.get("FS") or {}
+            result["latest_doc_type"] = latest.get("DocType", "")
+            result["latest_disc_date"] = latest.get("DiscDate", "")
+            result["fs_keys"] = list(fs.keys())[:50]  # first 50 keys
+            result["fs_key_count"] = len(fs)
+            result["parsed_values"] = _extract_fs_values(fs)
+            result["period_type"] = _parse_period_type(latest.get("DocType", ""))
+        return result
     except Exception as e:
         return {"code": code, "error": str(e)}
 
