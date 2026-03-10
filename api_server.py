@@ -1100,20 +1100,53 @@ def refresh_metrics():
 
             # Auto-populate os_shares from summary if not set from XLS
             if os_shares <= 0 and summary_records:
+                _os_keys = [
+                    "NumberOfIssuedAndOutstandingSharesAtTheEndOfFiscalYearIncludingTreasuryStock",
+                    "NumSharesOutstanding",
+                    "SharesOutstanding",
+                    "IssuedShares",
+                    "NumberOfShares",
+                ]
                 for srec in summary_records:
-                    val = srec.get("NumberOfIssuedAndOutstandingSharesAtTheEndOfFiscalYearIncludingTreasuryStock")
-                    if val is None:
-                        val = srec.get("NumSharesOutstanding")
-                    if val is not None:
-                        try:
-                            candidate = float(val)
-                            if candidate > 0:
-                                os_shares = candidate
-                                position.os_shares = os_shares
-                                print(f"  {symbol}: os_shares auto-populated from summary: {os_shares:,.0f}")
-                                break
-                        except (ValueError, TypeError):
-                            pass
+                    found = False
+                    for osk in _os_keys:
+                        val = srec.get(osk)
+                        if val is not None:
+                            try:
+                                candidate = float(val)
+                                if candidate > 0:
+                                    os_shares = candidate
+                                    position.os_shares = os_shares
+                                    print(f"  {symbol}: os_shares from summary field '{osk}': {os_shares:,.0f}")
+                                    found = True
+                                    break
+                            except (ValueError, TypeError):
+                                pass
+                    if found:
+                        break
+
+            # Fallback: try shares_outstanding from FS details
+            if os_shares <= 0:
+                for pr in parsed_records:
+                    if pr.get("shares_outstanding") is not None and pr["shares_outstanding"] > 0:
+                        os_shares = pr["shares_outstanding"]
+                        position.os_shares = os_shares
+                        print(f"  {symbol}: os_shares from FS details: {os_shares:,.0f}")
+                        break
+
+            # Fallback: try to derive os_shares from FS details (equity / BPS)
+            if os_shares <= 0 and summary_bps and summary_bps > 0:
+                equity_for_os = None
+                for pr in parsed_records:
+                    if pr.get("equity") is not None and pr["equity"] > 0:
+                        equity_for_os = pr["equity"]
+                        break
+                if equity_for_os is None and summary_eq and summary_eq > 0:
+                    equity_for_os = summary_eq
+                if equity_for_os and equity_for_os > 0:
+                    os_shares = equity_for_os / summary_bps
+                    position.os_shares = os_shares
+                    print(f"  {symbol}: os_shares derived from equity/BPS: {os_shares:,.0f}")
 
             if summary_records:
                 print(f"  {symbol}: summary has {len(summary_records)} records, "
@@ -1123,7 +1156,7 @@ def refresh_metrics():
             else:
                 print(f"  {symbol}: NO summary records (raw keys={list(summary_data.keys()) if isinstance(summary_data, dict) else 'list'})")
 
-            # ---- PBR: Price / (Equity / Shares) ----
+            # ---- PBR: Price / (Equity / Shares), fallback to Price / BPS ----
             equity = None
             for pr in parsed_records:
                 if pr.get("equity") is not None:
@@ -1134,6 +1167,15 @@ def refresh_metrics():
             if equity and equity > 0 and os_shares > 0 and price > 0:
                 bvps = equity / os_shares
                 m["pbr"] = round(price / bvps, 2)
+            elif summary_bps and summary_bps > 0 and price > 0:
+                m["pbr"] = round(price / summary_bps, 2)
+            # Also try BPS from FS details
+            if "pbr" not in m and price > 0:
+                for pr in parsed_records:
+                    bps_det = pr.get("bps_detail")
+                    if bps_det and bps_det > 0:
+                        m["pbr"] = round(price / bps_det, 2)
+                        break
 
             # ---- PE LTM: Price / (Net Income FY / Shares), fallback to summary EPS ----
             net_income_fy = fy_record.get("net_income") if fy_record else None
@@ -1226,10 +1268,38 @@ def refresh_metrics():
                     m["plowback"] = round(1.0 - payout_dec, 3)
                     m["payout_ratio"] = round(payout_dec * 100, 1)
 
-            # ---- Div Yield: Dividends Paid / Market Cap ----
+            # ---- Div Yield: Dividends Paid / Market Cap, fallback to DPS or summary ----
             if dividends_paid is not None and os_shares > 0 and price > 0:
                 div_per_share = dividends_paid / os_shares
                 m["div_yield"] = round(div_per_share / price * 100, 2)
+
+            # Fallback: use DPS from FS details
+            if "div_yield" not in m and price > 0:
+                for pr in parsed_records:
+                    dps = pr.get("dps_detail")
+                    if dps is not None and dps > 0:
+                        m["div_yield"] = round(dps / price * 100, 2)
+                        break
+
+            # Fallback: use DPS from summary records
+            if "div_yield" not in m and price > 0 and summary_records:
+                _dps_keys = [
+                    "DividendPerShareAnnual", "DPS", "DividendPerShare",
+                    "AnnualDividendPerShare", "DividendsPerShare",
+                ]
+                for srec in summary_records:
+                    for dk in _dps_keys:
+                        val = srec.get(dk)
+                        if val is not None:
+                            try:
+                                dps_val = float(val)
+                                if dps_val > 0:
+                                    m["div_yield"] = round(dps_val / price * 100, 2)
+                                    break
+                            except (ValueError, TypeError):
+                                pass
+                    if "div_yield" in m:
+                        break
 
             # ---- OPM: Operating Profit / Net Sales ----
             op_profit = None
@@ -1417,6 +1487,22 @@ _FS_LABEL_MAP: list[tuple[str, list[str]]] = [
     ("dividends_paid", [
         "dividends paid",
         "cash dividends paid",
+        "dividends paid to owners of parent",
+        "total dividends paid",
+    ]),
+    # Outstanding shares (sometimes in details)
+    ("shares_outstanding", [
+        "total number of issued shares",
+        "number of issued and outstanding shares",
+        "number of shares issued",
+        "shares outstanding",
+        "issued shares",
+    ]),
+    # Dividends per share
+    ("dps_detail", [
+        "dividend per share",
+        "dividends per share",
+        "cash dividends per share",
     ]),
     # Per-share (sometimes in details)
     ("eps_detail", [
