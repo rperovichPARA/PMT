@@ -833,16 +833,17 @@ def refresh_metrics():
     except Exception as e:
         print(f"  TOPIX fetch error: {e}")
 
-    # ---- Parallel fetch: fins/details + stock bars for all symbols ----
+    # ---- Parallel fetch: fins/details + fins/summary + stock bars for all symbols ----
     def _fetch_symbol_data(symbol: str) -> dict:
         code = f"{symbol}0"
         detail_data = _jquants_get("/fins/details", {"code": code})
+        summary_data = _jquants_get("/fins/summary", {"code": code})
         stock_data = _jquants_get("/equities/bars/daily", {
             "code": code,
             "from": date_from_1y,
             "to": date_to,
         })
-        return {"symbol": symbol, "detail_data": detail_data, "stock_data": stock_data}
+        return {"symbol": symbol, "detail_data": detail_data, "summary_data": summary_data, "stock_data": stock_data}
 
     prefetched: dict[str, dict] = {}
     with ThreadPoolExecutor(max_workers=20) as pool:
@@ -902,12 +903,37 @@ def refresh_metrics():
             price = position.price
             os_shares = position.os_shares
 
+            # ---- Parse /fins/summary for FEPS, NxFEPS, FNP etc. ----
+            summary_data = fetched.get("summary_data", {})
+            summary_records = summary_data.get("data") or summary_data.get("fs_summary") or []
+            # Sort by DiscDate descending, pick most recent
+            summary_records.sort(key=lambda r: r.get("DiscDate", ""), reverse=True)
+            summary = summary_records[0] if summary_records else {}
+
+            # Helper to extract a float from the summary record
+            def _sfloat(key: str) -> float | None:
+                v = summary.get(key)
+                if v is None:
+                    return None
+                try:
+                    return float(v)
+                except (ValueError, TypeError):
+                    return None
+
+            summary_feps = _sfloat("FEPS")          # Forecast EPS (NTM)
+            summary_nxfeps = _sfloat("NxFEPS")      # Next-year forecast EPS (24M)
+            summary_fnp = _sfloat("FNP")             # Forecast net profit
+            summary_nxfnp = _sfloat("NxFNp")         # Next-year forecast net profit
+            summary_eq = _sfloat("Eq")                # Equity from summary
+
             # ---- PBR: Price / (Equity / Shares) ----
             equity = None
             for pr in parsed_records:
                 if pr.get("equity") is not None:
                     equity = pr["equity"]
                     break
+            if equity is None and summary_eq and summary_eq > 0:
+                equity = summary_eq
             if equity and equity > 0 and os_shares > 0 and price > 0:
                 bvps = equity / os_shares
                 m["pbr"] = round(price / bvps, 2)
@@ -918,24 +944,28 @@ def refresh_metrics():
                 ltm_eps = net_income_fy / os_shares
                 m["pe_ltm"] = round(price / ltm_eps, 1)
 
-            # ---- PE NTM: use forecast net income if available in details ----
-            # /fins/details may include forecast sections in some filings
+            # ---- PE NTM: use /fins/summary FEPS first, fall back to details forecast ----
             forecast_ni = None
             for pr in parsed_records:
                 if pr.get("forecast_net_income") is not None:
                     forecast_ni = pr["forecast_net_income"]
                     break
-            if forecast_ni and forecast_ni > 0 and os_shares > 0 and price > 0:
+            # Prefer summary FEPS (per-share, more reliably populated)
+            if summary_feps and summary_feps > 0 and price > 0:
+                m["pe_ntm"] = round(price / summary_feps, 1)
+            elif forecast_ni and forecast_ni > 0 and os_shares > 0 and price > 0:
                 feps = forecast_ni / os_shares
                 m["pe_ntm"] = round(price / feps, 1)
 
-            # ---- PE 24M: use next-year forecast if available ----
+            # ---- PE 24M: use /fins/summary NxFEPS first, fall back to details ----
             next_yr_ni = None
             for pr in parsed_records:
                 if pr.get("next_yr_forecast_ni") is not None:
                     next_yr_ni = pr["next_yr_forecast_ni"]
                     break
-            if next_yr_ni and next_yr_ni > 0 and os_shares > 0 and price > 0:
+            if summary_nxfeps and summary_nxfeps > 0 and price > 0:
+                m["pe_24m"] = round(price / summary_nxfeps, 1)
+            elif next_yr_ni and next_yr_ni > 0 and os_shares > 0 and price > 0:
                 next_yr_eps = next_yr_ni / os_shares
                 m["pe_24m"] = round(price / next_yr_eps, 1)
 
@@ -949,10 +979,18 @@ def refresh_metrics():
                 m["peg_c"] = round(pe_for_peg / (eps_growth * 100), 2)
 
             # ---- PEG n: PE 24M / next year EPS growth ----
-            if m.get("pe_24m") and forecast_ni and next_yr_ni and forecast_ni > 0:
-                next_yr_growth = (next_yr_ni - forecast_ni) / abs(forecast_ni)
-                if next_yr_growth > 0:
-                    m["peg_n"] = round(m["pe_24m"] / (next_yr_growth * 100), 2)
+            # Prefer summary FEPS→NxFEPS growth, fall back to details forecast_ni→next_yr_ni
+            if m.get("pe_24m"):
+                ntm_eps_for_peg = summary_feps
+                nxtm_eps_for_peg = summary_nxfeps
+                if ntm_eps_for_peg and nxtm_eps_for_peg and ntm_eps_for_peg > 0:
+                    next_yr_growth = (nxtm_eps_for_peg - ntm_eps_for_peg) / abs(ntm_eps_for_peg)
+                    if next_yr_growth > 0:
+                        m["peg_n"] = round(m["pe_24m"] / (next_yr_growth * 100), 2)
+                elif forecast_ni and next_yr_ni and forecast_ni > 0:
+                    next_yr_growth = (next_yr_ni - forecast_ni) / abs(forecast_ni)
+                    if next_yr_growth > 0:
+                        m["peg_n"] = round(m["pe_24m"] / (next_yr_growth * 100), 2)
 
             # ---- ROE (l): Net Income / Equity ----
             ni_for_roe = None
@@ -963,9 +1001,10 @@ def refresh_metrics():
             if ni_for_roe is not None and equity and equity > 0:
                 m["roe_l"] = round(ni_for_roe / equity * 100, 1)
 
-            # ---- ROE NTM: Forecast NI / Equity ----
-            if forecast_ni is not None and equity and equity > 0:
-                m["roe_ntm"] = round(forecast_ni / equity * 100, 1)
+            # ---- ROE NTM: Forecast NI / Equity (prefer summary FNP) ----
+            roe_ntm_ni = summary_fnp if summary_fnp is not None else forecast_ni
+            if roe_ntm_ni is not None and equity and equity > 0:
+                m["roe_ntm"] = round(roe_ntm_ni / equity * 100, 1)
 
             # ---- Plowback & Payout: from dividends paid / net income ----
             dividends_paid = None
