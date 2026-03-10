@@ -53,6 +53,26 @@ public class PositionData {
     @JsonProperty("eps_cagr_2y")
     private Double epsCagr2y;
 
+    // Returns
+    @JsonProperty("ret_1d")
+    private Double ret1d;
+    @JsonProperty("ret_1w")
+    private Double ret1w;
+    @JsonProperty("ret_1m")
+    private Double ret1m;
+    @JsonProperty("ret_3m")
+    private Double ret3m;
+    @JsonProperty("ret_6m")
+    private Double ret6m;
+    @JsonProperty("ret_ytd")
+    private Double retYtd;
+    @JsonProperty("ret_1y")
+    private Double ret1y;
+    @JsonProperty("ret_3y")
+    private Double ret3y;
+    @JsonProperty("ret_5y")
+    private Double ret5y;
+
     public String getSymbol() { return symbol; }
     public void setSymbol(String v) { this.symbol = v; }
 
@@ -115,4 +135,23 @@ public class PositionData {
     public void setOpCagr2y(Double v) { this.opCagr2y = v; }
     public Double getEpsCagr2y() { return epsCagr2y; }
     public void setEpsCagr2y(Double v) { this.epsCagr2y = v; }
+
+    public Double getRet1d() { return ret1d; }
+    public void setRet1d(Double v) { this.ret1d = v; }
+    public Double getRet1w() { return ret1w; }
+    public void setRet1w(Double v) { this.ret1w = v; }
+    public Double getRet1m() { return ret1m; }
+    public void setRet1m(Double v) { this.ret1m = v; }
+    public Double getRet3m() { return ret3m; }
+    public void setRet3m(Double v) { this.ret3m = v; }
+    public Double getRet6m() { return ret6m; }
+    public void setRet6m(Double v) { this.ret6m = v; }
+    public Double getRetYtd() { return retYtd; }
+    public void setRetYtd(Double v) { this.retYtd = v; }
+    public Double getRet1y() { return ret1y; }
+    public void setRet1y(Double v) { this.ret1y = v; }
+    public Double getRet3y() { return ret3y; }
+    public void setRet3y(Double v) { this.ret3y = v; }
+    public Double getRet5y() { return ret5y; }
+    public void setRet5y(Double v) { this.ret5y = v; }
 }

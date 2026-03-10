@@ -138,6 +138,16 @@ class PositionOut(BaseModel):
     sales_cagr_2y: float | None = None
     op_cagr_2y: float | None = None
     eps_cagr_2y: float | None = None
+    # Returns (populated by /api/metrics/refresh)
+    ret_1d: float | None = None
+    ret_1w: float | None = None
+    ret_1m: float | None = None
+    ret_3m: float | None = None
+    ret_6m: float | None = None
+    ret_ytd: float | None = None
+    ret_1y: float | None = None
+    ret_3y: float | None = None
+    ret_5y: float | None = None
 
 
 class FilingOut(BaseModel):
@@ -806,7 +816,8 @@ def refresh_metrics():
 
     today = datetime.now()
     date_to = today.strftime("%Y%m%d")
-    # 1 year for beta
+    # 5 years for returns; 1 year for beta
+    date_from_5y = (today - timedelta(days=365 * 5 + 2)).strftime("%Y%m%d")
     date_from_1y = (today - timedelta(days=365)).strftime("%Y%m%d")
 
     # ---- Fetch TOPIX daily bars for beta calculation ----
@@ -845,7 +856,7 @@ def refresh_metrics():
         summary_data = _jquants_get("/fins/summary", {"code": code})
         stock_data = _jquants_get("/equities/bars/daily", {
             "code": code,
-            "from": date_from_1y,
+            "from": date_from_5y,
             "to": date_to,
         })
         return {"symbol": symbol, "detail_data": detail_data, "summary_data": summary_data, "stock_data": stock_data}
@@ -1148,6 +1159,54 @@ def refresh_metrics():
                                 m["beta"] = round(float(beta_val), 2)
                 except Exception as e:
                     print(f"  {symbol}: beta calc error: {e}")
+
+            # ---- Price returns (1d, 1w, 1m, 3m, 6m, YTD, 1y, 3y, 5y) ----
+            try:
+                stock_bars = fetched["stock_data"].get("data") or fetched["stock_data"].get("eq_bars_daily") or []
+                if stock_bars:
+                    closes_by_date: dict[str, float] = {}
+                    for bar in stock_bars:
+                        dt = bar.get("Date", "")
+                        c = bar.get("AdjClose") or bar.get("Close") or bar.get("AdjC") or bar.get("C")
+                        if c is not None and dt:
+                            try:
+                                closes_by_date[dt] = float(c)
+                            except (ValueError, TypeError):
+                                pass
+                    if closes_by_date:
+                        sorted_dates = sorted(closes_by_date.keys())
+                        latest_price = closes_by_date[sorted_dates[-1]]
+
+                        def _find_price_on_or_before(target_date_str: str) -> float | None:
+                            """Find closing price on target date or nearest prior date."""
+                            for d in reversed(sorted_dates):
+                                if d <= target_date_str:
+                                    return closes_by_date[d]
+                            return None
+
+                        def _calc_return(days_ago: int) -> float | None:
+                            target = (today - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+                            p = _find_price_on_or_before(target)
+                            if p and p > 0:
+                                return round((latest_price - p) / p * 100, 2)
+                            return None
+
+                        m["ret_1d"] = _calc_return(1)
+                        m["ret_1w"] = _calc_return(7)
+                        m["ret_1m"] = _calc_return(30)
+                        m["ret_3m"] = _calc_return(91)
+                        m["ret_6m"] = _calc_return(182)
+                        m["ret_1y"] = _calc_return(365)
+                        m["ret_3y"] = _calc_return(365 * 3)
+                        m["ret_5y"] = _calc_return(365 * 5)
+
+                        # YTD: from last trading day of previous year
+                        ytd_target = f"{today.year - 1}-12-31"
+                        ytd_price = _find_price_on_or_before(ytd_target)
+                        if ytd_price and ytd_price > 0:
+                            m["ret_ytd"] = round((latest_price - ytd_price) / ytd_price * 100, 2)
+            except Exception as e:
+                print(f"  {symbol}: returns calc error: {e}")
 
             _state["metrics"][symbol] = m
             updated += 1

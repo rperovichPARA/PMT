@@ -228,6 +228,24 @@ public class MainWindow {
         });
         VBox.setVgrow(portfolioTable, Priority.ALWAYS);
 
+        // Custom sort policy: cash rows always pinned to bottom
+        portfolioTable.setSortPolicy(table -> {
+            FXCollections.sort(table.getItems(), (a, b) -> {
+                boolean aCash = a.getData().isCash();
+                boolean bCash = b.getData().isCash();
+                if (aCash && !bCash) return 1;
+                if (!aCash && bCash) return -1;
+                if (aCash && bCash) return 0;
+                // Apply the table's current sort order for non-cash rows
+                Comparator<PositionRow> tableComparator = (Comparator<PositionRow>) table.getComparator();
+                if (tableComparator != null) {
+                    return tableComparator.compare(a, b);
+                }
+                return 0;
+            });
+            return true;
+        });
+
         buildPortfolioColumns();
 
         panel.getChildren().addAll(toolbar, portfolioTable);
@@ -235,7 +253,7 @@ public class MainWindow {
     }
 
     private static final int NUM_FIXED_COLUMNS = 4;
-    private static final int NUM_METRIC_COLUMNS = 16;
+    private static final int NUM_METRIC_COLUMNS = 25; // 16 metrics + 9 returns
 
     private void buildPortfolioColumns() {
         portfolioTable.getColumns().clear();
@@ -281,6 +299,17 @@ public class MainWindow {
         addMetricCol("2Y Sales", "salesCagr2y",  60, PositionData::getSalesCagr2y,true);
         addMetricCol("2Y Op",    "opCagr2y",     55, PositionData::getOpCagr2y,   true);
         addMetricCol("2Y EPS",   "epsCagr2y",    55, PositionData::getEpsCagr2y,  true);
+
+        // Return columns
+        addReturnCol("1D",   "ret1d",   50, PositionData::getRet1d);
+        addReturnCol("1W",   "ret1w",   50, PositionData::getRet1w);
+        addReturnCol("1M",   "ret1m",   50, PositionData::getRet1m);
+        addReturnCol("3M",   "ret3m",   50, PositionData::getRet3m);
+        addReturnCol("6M",   "ret6m",   50, PositionData::getRet6m);
+        addReturnCol("YTD",  "retYtd",  50, PositionData::getRetYtd);
+        addReturnCol("1Y",   "ret1y",   55, PositionData::getRet1y);
+        addReturnCol("3Y",   "ret3y",   55, PositionData::getRet3y);
+        addReturnCol("5Y",   "ret5y",   55, PositionData::getRet5y);
     }
 
     private void addMetricCol(String header, String property, int width,
@@ -348,6 +377,45 @@ public class MainWindow {
 
                 String bgColor = String.format("#%02X%02X%02X", r, g, b);
                 setStyle("-fx-alignment: CENTER-RIGHT; -fx-background-color: " + bgColor + ";");
+            }
+        });
+
+        portfolioTable.getColumns().add(col);
+    }
+
+    private void addReturnCol(String header, String property, int width,
+                              Function<PositionData, Double> extractor) {
+        TableColumn<PositionRow, String> col = new TableColumn<>(header);
+        col.setCellValueFactory(new PropertyValueFactory<>(property));
+        col.setPrefWidth(width);
+        col.setStyle("-fx-alignment: CENTER-RIGHT;");
+        col.setComparator(NUMERIC_STRING_COMPARATOR);
+
+        col.setCellFactory(column -> new TableCell<>() {
+            @Override
+            protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null || item.isEmpty()) {
+                    setText(null);
+                    setStyle("-fx-alignment: CENTER-RIGHT;");
+                    return;
+                }
+                setText(item);
+                try {
+                    PositionRow row = getTableView().getItems().get(getIndex());
+                    Double rawValue = extractor.apply(row.getData());
+                    if (rawValue == null) {
+                        setStyle("-fx-alignment: CENTER-RIGHT;");
+                    } else if (rawValue > 0) {
+                        setStyle("-fx-alignment: CENTER-RIGHT; -fx-text-fill: #008800;");
+                    } else if (rawValue < 0) {
+                        setStyle("-fx-alignment: CENTER-RIGHT; -fx-text-fill: #cc0000;");
+                    } else {
+                        setStyle("-fx-alignment: CENTER-RIGHT;");
+                    }
+                } catch (Exception e) {
+                    setStyle("-fx-alignment: CENTER-RIGHT;");
+                }
             }
         });
 
@@ -1342,5 +1410,16 @@ public class MainWindow {
         public String getSalesCagr2y() { return fmtOpt(data.getSalesCagr2y(), "%.1f%%"); }
         public String getOpCagr2y() { return fmtOpt(data.getOpCagr2y(), "%.1f%%"); }
         public String getEpsCagr2y() { return fmtOpt(data.getEpsCagr2y(), "%.1f%%"); }
+
+        // Returns accessors
+        public String getRet1d() { return fmtOpt(data.getRet1d(), "%.2f%%"); }
+        public String getRet1w() { return fmtOpt(data.getRet1w(), "%.2f%%"); }
+        public String getRet1m() { return fmtOpt(data.getRet1m(), "%.1f%%"); }
+        public String getRet3m() { return fmtOpt(data.getRet3m(), "%.1f%%"); }
+        public String getRet6m() { return fmtOpt(data.getRet6m(), "%.1f%%"); }
+        public String getRetYtd() { return fmtOpt(data.getRetYtd(), "%.1f%%"); }
+        public String getRet1y() { return fmtOpt(data.getRet1y(), "%.1f%%"); }
+        public String getRet3y() { return fmtOpt(data.getRet3y(), "%.1f%%"); }
+        public String getRet5y() { return fmtOpt(data.getRet5y(), "%.1f%%"); }
     }
 }
