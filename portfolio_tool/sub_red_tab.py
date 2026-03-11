@@ -101,6 +101,7 @@ def compute_schedule(
             "current_value_usd": val_usd,
             "adv_10pct": pos.adv_10pct,
             "price": pos.price,
+            "total_quantity": total_qty,
         })
 
     if total_value_usd <= 0 or not positions:
@@ -121,6 +122,7 @@ def compute_schedule(
         results.append({
             "symbol": p["symbol"],
             "name": p["name"],
+            "total_quantity": p["total_quantity"],
             "current_value_usd": p["current_value_usd"],
             "target_change_usd": change_usd,
             "adv_10pct": adv,

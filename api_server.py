@@ -1829,6 +1829,7 @@ class ScheduleRequest(BaseModel):
 class ScheduleItem(BaseModel):
     symbol: str
     name: str
+    total_quantity: float
     current_value_usd: float
     target_change_usd: float
     trading_days: float
