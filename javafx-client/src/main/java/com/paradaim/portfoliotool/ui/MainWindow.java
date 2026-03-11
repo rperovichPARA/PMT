@@ -103,6 +103,7 @@ public class MainWindow {
     // Correlation tab components
     private TableView<CorrelationRow> corrTable;
     private Label corrInfoLabel;
+    private Label corrAvgLabel;
     private ComboBox<String> corrLookbackCombo;
     private ComboBox<String> corrPeriodicityCombo;
     private final List<String> corrSymbols = new ArrayList<>();
@@ -1029,11 +1030,16 @@ public class MainWindow {
         corrInfoLabel = new Label("Import a portfolio, then click Run Correlation.");
         corrInfoLabel.setStyle("-fx-font-size: 13px;");
 
+        corrAvgLabel = new Label();
+        corrAvgLabel.setStyle("-fx-font-size: 13px; -fx-font-weight: bold;");
+        corrAvgLabel.setVisible(false);
+        corrAvgLabel.setManaged(false);
+
         corrTable = new TableView<>();
         corrTable.setPlaceholder(new Label("Import a portfolio to begin"));
         VBox.setVgrow(corrTable, Priority.ALWAYS);
 
-        tab.getChildren().addAll(toolbar, corrInfoLabel, corrTable);
+        tab.getChildren().addAll(toolbar, corrInfoLabel, corrAvgLabel, corrTable);
         return tab;
     }
 
@@ -1068,6 +1074,8 @@ public class MainWindow {
                 corrNames.add(p.getName());
             }
             lastCorrelation = null;
+            corrAvgLabel.setVisible(false);
+            corrAvgLabel.setManaged(false);
             buildCorrPositionColumns();
             corrInfoLabel.setText("Portfolio loaded \u2014 " + corrSymbols.size()
                     + " symbols. Click Run Correlation to compute the matrix.");
@@ -1122,9 +1130,53 @@ public class MainWindow {
                         "Correlation Matrix  |  %d symbols  |  Lookback: %s  |  Periodicity: %s",
                         response.getSymbols().size(), lookback,
                         corrPeriodicityCombo.getValue()));
+
+                // Compute and display portfolio-wide average correlation
+                double totalCorr = 0;
+                int count = 0;
+                for (CorrelationRow row : response.getRows()) {
+                    if (row.getAvgCorrelation() != null) {
+                        totalCorr += row.getAvgCorrelation();
+                        count++;
+                    }
+                }
+                if (count > 0) {
+                    corrAvgLabel.setText(String.format("Portfolio Average Correlation: %.4f", totalCorr / count));
+                    corrAvgLabel.setVisible(true);
+                    corrAvgLabel.setManaged(true);
+                } else {
+                    corrAvgLabel.setVisible(false);
+                    corrAvgLabel.setManaged(false);
+                }
+
                 setStatus("Correlation matrix computed for " + response.getSymbols().size() + " symbols");
             }
         );
+    }
+
+    /**
+     * Interpolate a correlation value to a background color.
+     * Uses the same green-to-pink scheme as the portfolio tab but inverted:
+     * lowest correlation = green (#C4D79B), highest = pink (#E6B8B7), mid = white.
+     */
+    private String corrColor(double value, double minVal, double maxVal) {
+        if (maxVal <= minVal) return "";
+        double rank = (value - minVal) / (maxVal - minVal); // 0=lowest, 1=highest
+        // For correlation: high = pink (less desirable), low = green (more desirable)
+        double attractiveness = 1.0 - rank;
+        int r, g, b;
+        if (attractiveness >= 0.5) {
+            double t = (attractiveness - 0.5) * 2.0;
+            r = (int) (255 - t * (255 - 196));
+            g = (int) (255 - t * (255 - 215));
+            b = (int) (255 - t * (255 - 155));
+        } else {
+            double t = attractiveness * 2.0;
+            r = (int) (230 + t * (255 - 230));
+            g = (int) (184 + t * (255 - 184));
+            b = (int) (183 + t * (255 - 183));
+        }
+        return String.format("-fx-background-color: #%02X%02X%02X;", r, g, b);
     }
 
     @SuppressWarnings("unchecked")
@@ -1132,23 +1184,66 @@ public class MainWindow {
         corrTable.getColumns().clear();
 
         String selfStyle = "-fx-alignment: CENTER-RIGHT; -fx-background-color: #f0f0f0;";
-        String normalStyle = "-fx-alignment: CENTER-RIGHT;";
 
-        // Avg Correlation column
+        // Collect all correlation values to determine min/max for color scaling
+        double allMin = Double.MAX_VALUE, allMax = -Double.MAX_VALUE;
+        double avgMin = Double.MAX_VALUE, avgMax = -Double.MAX_VALUE;
+        for (CorrelationRow row : response.getRows()) {
+            if (row.getAvgCorrelation() != null) {
+                avgMin = Math.min(avgMin, row.getAvgCorrelation());
+                avgMax = Math.max(avgMax, row.getAvgCorrelation());
+            }
+            if (row.getCorrelations() != null) {
+                for (Double v : row.getCorrelations()) {
+                    if (v != null) {
+                        allMin = Math.min(allMin, v);
+                        allMax = Math.max(allMax, v);
+                    }
+                }
+            }
+        }
+        final double fAllMin = allMin, fAllMax = allMax;
+        final double fAvgMin = avgMin, fAvgMax = avgMax;
+
+        // Avg Correlation column (with conditional formatting)
         TableColumn<CorrelationRow, String> avgCol = new TableColumn<>("Avg Corr");
         avgCol.setCellValueFactory(cd -> {
             Double avg = cd.getValue().getAvgCorrelation();
             return new SimpleStringProperty(avg != null ? String.format("%.2f", avg) : "");
         });
+        avgCol.setCellFactory(c -> new TableCell<>() {
+            @Override
+            protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null || item.isEmpty()) {
+                    setText(null);
+                    setStyle("-fx-alignment: CENTER-RIGHT;");
+                    return;
+                }
+                setText(item);
+                CorrelationRow row = getTableView().getItems().get(getIndex());
+                Double avg = row.getAvgCorrelation();
+                if (avg != null && fAvgMax > fAvgMin) {
+                    setStyle("-fx-alignment: CENTER-RIGHT; -fx-font-weight: bold; "
+                            + corrColor(avg, fAvgMin, fAvgMax));
+                } else {
+                    setStyle("-fx-alignment: CENTER-RIGHT; -fx-font-weight: bold;");
+                }
+            }
+        });
         avgCol.setPrefWidth(80);
-        avgCol.setStyle("-fx-alignment: CENTER-RIGHT; -fx-font-weight: bold;");
 
         // Symbol column (row header)
         TableColumn<CorrelationRow, String> symCol = new TableColumn<>("Symbol");
         symCol.setCellValueFactory(new PropertyValueFactory<>("symbol"));
         symCol.setPrefWidth(80);
 
-        corrTable.getColumns().addAll(avgCol, symCol);
+        // Name column
+        TableColumn<CorrelationRow, String> nameCol = new TableColumn<>("Name");
+        nameCol.setCellValueFactory(new PropertyValueFactory<>("name"));
+        nameCol.setPrefWidth(150);
+
+        corrTable.getColumns().addAll(avgCol, symCol, nameCol);
 
         // One column per symbol
         List<String> symbols = response.getSymbols();
@@ -1174,12 +1269,17 @@ public class MainWindow {
                                 && symbols.get(rowIdx).equals(symbols.get(colIdx))) {
                             setStyle(selfStyle);
                         } else {
-                            setStyle(normalStyle);
+                            setStyle("-fx-alignment: CENTER-RIGHT;");
                         }
                         return;
                     }
                     setText(item);
-                    setStyle(normalStyle);
+                    try {
+                        double val = Double.parseDouble(item);
+                        setStyle("-fx-alignment: CENTER-RIGHT; " + corrColor(val, fAllMin, fAllMax));
+                    } catch (NumberFormatException e) {
+                        setStyle("-fx-alignment: CENTER-RIGHT;");
+                    }
                 }
             });
             col.setPrefWidth(65);
