@@ -83,7 +83,6 @@ class PortfolioManager(QMainWindow):
         # UI flags
         self.filings_visible = False
         self.chart_visible = False
-        self.use_yfinance_pricing = False
         self.auto_sort_enabled = True
 
         # Sort state
@@ -146,10 +145,21 @@ class PortfolioManager(QMainWindow):
         self._tab_widget.addTab(tab1, "Current Portfolio")
 
         # --- Tab 2: Subscription/Redemption ---
-        from .sub_red_tab import SubscriptionRedemptionTab
+        try:
+            from .sub_red_tab import SubscriptionRedemptionTab
 
-        self._sub_red_tab = SubscriptionRedemptionTab(self)
-        self._tab_widget.addTab(self._sub_red_tab, "Subscription/Redemption")
+            self._sub_red_tab = SubscriptionRedemptionTab(self)
+            self._tab_widget.addTab(self._sub_red_tab, "Subscription/Redemption")
+        except Exception as exc:
+            import traceback
+
+            traceback.print_exc()
+            err_widget = QWidget()
+            err_layout = QVBoxLayout(err_widget)
+            err_layout.addWidget(
+                QLabel(f"Failed to load Subscription/Redemption tab:\n{exc}")
+            )
+            self._tab_widget.addTab(err_widget, "Subscription/Redemption (Error)")
 
     def _build_menu_bar(self) -> None:
         mb = self.menuBar()
@@ -169,18 +179,6 @@ class PortfolioManager(QMainWindow):
         QShortcut(QKeySequence("Ctrl+-"), self, self._decrease_font)
         QShortcut(QKeySequence("Ctrl+="), self, self._increase_font)
         QShortcut(QKeySequence("Ctrl+0"), self, self._reset_font)
-
-        settings = mb.addMenu("Settings")
-        price_menu = settings.addMenu("Price Source")
-
-        self._excel_price_action = price_menu.addAction("Use Excel Prices")
-        self._excel_price_action.setCheckable(True)
-        self._excel_price_action.setChecked(True)
-        self._excel_price_action.triggered.connect(self._set_excel_prices)
-
-        self._yfinance_price_action = price_menu.addAction("Use YFinance Prices")
-        self._yfinance_price_action.setCheckable(True)
-        self._yfinance_price_action.triggered.connect(self._set_yfinance_prices)
 
     # =====================================================================
     #  FONT SCALING
@@ -207,29 +205,6 @@ class PortfolioManager(QMainWindow):
         if self.chart_visible:
             self._create_cash_path_chart()
 
-    def _set_excel_prices(self) -> None:
-        if not self._excel_price_action.isChecked():
-            self._excel_price_action.setChecked(True)
-            return
-        self.use_yfinance_pricing = False
-        self._yfinance_price_action.setChecked(False)
-        QMessageBox.information(self, "Price Source", "Using prices from Excel file")
-
-    def _set_yfinance_prices(self) -> None:
-        if not self._yfinance_price_action.isChecked():
-            self._yfinance_price_action.setChecked(True)
-            return
-        self.use_yfinance_pricing = True
-        self._excel_price_action.setChecked(False)
-        reply = QMessageBox.question(
-            self,
-            "Refresh Prices",
-            "Do you want to refresh all prices from YFinance now?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if reply == QMessageBox.Yes:
-            self._refresh_prices()
 
     # ---- portfolio frame ---------------------------------------------------
 
@@ -474,7 +449,7 @@ class PortfolioManager(QMainWindow):
 
         progress = self._make_progress("Importing portfolio data...", 100)
 
-        self._import_worker = PortfolioImportWorker(path, self.use_yfinance_pricing)
+        self._import_worker = PortfolioImportWorker(path)
         self._import_worker.progress_updated.connect(
             lambda v, s: self._update_progress(progress, v, s)
         )
@@ -728,6 +703,7 @@ class PortfolioManager(QMainWindow):
             lambda v, s: self._update_progress(progress, v, s)
         )
         self._price_worker.completed.connect(progress.close)
+        self._price_worker.completed.connect(self._refresh_portfolio_display)
         self._price_worker.error.connect(
             lambda msg: self._on_import_error(progress, msg)
         )

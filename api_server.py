@@ -13,13 +13,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Any
 
-import requests as http_requests
-
 import pandas as pd
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from portfolio_tool.jquants import fetch_usd_jpy_rate as _fetch_usd_jpy_rate
+from portfolio_tool.jquants import jquants_get as _jquants_get
 from portfolio_tool.models import (
     CASH_SYMBOLS,
     DEFAULT_EXCHANGE_RATE,
@@ -32,44 +32,6 @@ from portfolio_tool.models import (
     filing_thresholds,
     normalize_symbol,
 )
-
-# ---------------------------------------------------------------------------
-# J-Quants V2 API configuration
-# ---------------------------------------------------------------------------
-JQUANTS_API_KEY = "IsSPKDgnOojzoMEjBGhivJuw7_c9FBPlPDzt4iuYPdc"
-JQUANTS_BASE_URL = "https://api.jquants.com/v2"
-
-
-def _jquants_headers() -> dict[str, str]:
-    return {"x-api-key": JQUANTS_API_KEY}
-
-
-def _jquants_get(path: str, params: dict | None = None) -> dict:
-    """Make an authenticated GET request to J-Quants V2 API."""
-    resp = http_requests.get(
-        f"{JQUANTS_BASE_URL}{path}",
-        headers=_jquants_headers(),
-        params=params or {},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def _fetch_usd_jpy_rate() -> float | None:
-    """Fetch current USD/JPY rate from a public API.  Returns None on failure."""
-    try:
-        resp = http_requests.get(
-            "https://api.exchangerate-api.com/v4/latest/USD",
-            timeout=10,
-        )
-        resp.raise_for_status()
-        rate = resp.json().get("rates", {}).get("JPY")
-        if rate and float(rate) > 1.0:
-            return float(rate)
-    except Exception as e:
-        print(f"  FX rate fetch failed: {e}")
-    return None
 
 
 app = FastAPI(title="Paradaim Portfolio.Tool API", version="2.0.0")
@@ -91,7 +53,6 @@ _state: dict[str, Any] = {
     "usd_jpy_rate": 0.0,
     "filings": {},             # dict[str, FilingRecord]
     "proposed_executions": {}, # dict[str, ProposedExecution]
-    "use_yfinance": False,
     "metrics": {},             # dict[str, dict] – per-symbol metrics from /fins/details
     "new_positions": set(),    # set[str] – symbols added via Add Position dialog
 }
