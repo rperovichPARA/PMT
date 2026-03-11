@@ -96,9 +96,9 @@ public class MainWindow {
     private ScheduleResponse lastSchedule;
     private boolean showShares = false;  // false = show $ amount (default), true = show shares
     private ToggleButton displayToggle;
-    private Label runningTotalLabel;
-    private Label runningPctLabel;
-    private VBox scheduleSummaryBox;
+
+    private static final String CUMUL_USD_MARKER = "__CUMUL_USD__";
+    private static final String CUMUL_PCT_MARKER = "__CUMUL_PCT__";
 
     private void buildUI() {
         root.setTop(buildMenuBar());
@@ -737,7 +737,10 @@ public class MainWindow {
             displayToggle.setText(showShares ? "Show Amount" : "Show Shares");
             if (lastSchedule != null) {
                 buildScheduleColumns(lastSchedule.getTotalWeeks());
-                scheduleTable.getItems().setAll(lastSchedule.getItems());
+                List<ScheduleItem> tableItems = new ArrayList<>();
+                tableItems.addAll(buildSummaryRows(lastSchedule));
+                tableItems.addAll(lastSchedule.getItems());
+                scheduleTable.getItems().setAll(tableItems);
             }
         });
 
@@ -747,21 +750,12 @@ public class MainWindow {
         scheduleInfoLabel = new Label("Import a portfolio and click Create Subscription or Create Redemption to generate a schedule.");
         scheduleInfoLabel.setStyle("-fx-font-size: 13px;");
 
-        // Running total / % completed summary rows (above table)
-        runningTotalLabel = new Label();
-        runningTotalLabel.setStyle("-fx-font-size: 12px; -fx-font-weight: bold;");
-        runningPctLabel = new Label();
-        runningPctLabel.setStyle("-fx-font-size: 12px; -fx-font-weight: bold;");
-        scheduleSummaryBox = new VBox(2, runningTotalLabel, runningPctLabel);
-        scheduleSummaryBox.setVisible(false);
-        scheduleSummaryBox.setManaged(false);
-
         // Schedule table
         scheduleTable = new TableView<>();
         scheduleTable.setPlaceholder(new Label("Import a portfolio to begin"));
         VBox.setVgrow(scheduleTable, Priority.ALWAYS);
 
-        tab.getChildren().addAll(toolbar, scheduleInfoLabel, scheduleSummaryBox, scheduleTable);
+        tab.getChildren().addAll(toolbar, scheduleInfoLabel, scheduleTable);
         return tab;
     }
 
@@ -802,8 +796,6 @@ public class MainWindow {
             }
             scheduleTable.getItems().setAll(items);
             lastSchedule = null;
-            scheduleSummaryBox.setVisible(false);
-            scheduleSummaryBox.setManaged(false);
             scheduleInfoLabel.setText("Portfolio loaded \u2014 " + items.size()
                     + " positions. Click Create Subscription or Create Redemption to generate a schedule.");
         });
@@ -832,33 +824,84 @@ public class MainWindow {
         scheduleTable.getColumns().addAll(symCol, nameCol, qtyCol);
     }
 
+    private boolean isSummaryRow(ScheduleItem item) {
+        String sym = item.getSymbol();
+        return CUMUL_USD_MARKER.equals(sym) || CUMUL_PCT_MARKER.equals(sym);
+    }
+
     @SuppressWarnings("unchecked")
     private void buildScheduleColumns(int totalWeeks) {
         scheduleTable.getColumns().clear();
 
+        String boldStyle = "-fx-font-weight: bold; -fx-background-color: #f0f0f0;";
+
         TableColumn<ScheduleItem, String> symCol = new TableColumn<>("Symbol");
-        symCol.setCellValueFactory(new PropertyValueFactory<>("symbol"));
+        symCol.setCellValueFactory(cd -> {
+            if (isSummaryRow(cd.getValue())) return new SimpleStringProperty("");
+            return new SimpleStringProperty(cd.getValue().getSymbol());
+        });
+        symCol.setCellFactory(col -> new TableCell<>() {
+            @Override protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty ? null : item);
+                setStyle(getTableRow() != null && getTableRow().getItem() != null
+                        && isSummaryRow(getTableRow().getItem())
+                        ? boldStyle : "");
+            }
+        });
         symCol.setPrefWidth(80);
 
         TableColumn<ScheduleItem, String> nameCol = new TableColumn<>("Name");
-        nameCol.setCellValueFactory(new PropertyValueFactory<>("name"));
+        nameCol.setCellValueFactory(cd -> {
+            ScheduleItem si = cd.getValue();
+            if (CUMUL_USD_MARKER.equals(si.getSymbol())) return new SimpleStringProperty("Cumulative $");
+            if (CUMUL_PCT_MARKER.equals(si.getSymbol())) return new SimpleStringProperty("Cumulative %");
+            return new SimpleStringProperty(si.getName());
+        });
+        nameCol.setCellFactory(col -> new TableCell<>() {
+            @Override protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty ? null : item);
+                setStyle(getTableRow() != null && getTableRow().getItem() != null
+                        && isSummaryRow(getTableRow().getItem())
+                        ? boldStyle : "");
+            }
+        });
         nameCol.setPrefWidth(150);
 
         TableColumn<ScheduleItem, String> qtyCol = new TableColumn<>("Quantity");
         qtyCol.setCellValueFactory(cd -> {
+            if (isSummaryRow(cd.getValue())) return new SimpleStringProperty("");
             double qty = cd.getValue().getTotalQuantity();
             return new SimpleStringProperty(formatNumber(qty));
         });
+        qtyCol.setCellFactory(col -> new TableCell<>() {
+            @Override protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty ? null : item);
+                setStyle(getTableRow() != null && getTableRow().getItem() != null
+                        && isSummaryRow(getTableRow().getItem())
+                        ? boldStyle + " -fx-alignment: CENTER-RIGHT;" : "-fx-alignment: CENTER-RIGHT;");
+            }
+        });
         qtyCol.setPrefWidth(100);
-        qtyCol.setStyle("-fx-alignment: CENTER-RIGHT;");
 
         TableColumn<ScheduleItem, String> daysCol = new TableColumn<>("Trading Days");
         daysCol.setCellValueFactory(cd -> {
+            if (isSummaryRow(cd.getValue())) return new SimpleStringProperty("");
             double td = cd.getValue().getTradingDays();
             return new SimpleStringProperty(td > 0 ? String.format("%.1f", td) : "\u2014");
         });
+        daysCol.setCellFactory(col -> new TableCell<>() {
+            @Override protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty ? null : item);
+                setStyle(getTableRow() != null && getTableRow().getItem() != null
+                        && isSummaryRow(getTableRow().getItem())
+                        ? boldStyle + " -fx-alignment: CENTER-RIGHT;" : "-fx-alignment: CENTER-RIGHT;");
+            }
+        });
         daysCol.setPrefWidth(90);
-        daysCol.setStyle("-fx-alignment: CENTER-RIGHT;");
 
         scheduleTable.getColumns().addAll(symCol, nameCol, qtyCol, daysCol);
 
@@ -868,11 +911,20 @@ public class MainWindow {
             final int weekIdx = w;
             TableColumn<ScheduleItem, String> weekCol = new TableColumn<>("Week " + (w + 1));
             weekCol.setCellValueFactory(cd -> {
-                List<Double> weeks = cd.getValue().getWeeks();
+                ScheduleItem si = cd.getValue();
+                List<Double> weeks = si.getWeeks();
                 if (weeks == null || weekIdx >= weeks.size()) return new SimpleStringProperty("");
                 double val = weeks.get(weekIdx);
+
+                if (CUMUL_USD_MARKER.equals(si.getSymbol())) {
+                    return new SimpleStringProperty(String.format("$%,.1fmm", val / 1e6));
+                }
+                if (CUMUL_PCT_MARKER.equals(si.getSymbol())) {
+                    return new SimpleStringProperty(String.format("%,.1f%%", val));
+                }
+
                 if (showShares) {
-                    double priceJpy = cd.getValue().getPriceJpy();
+                    double priceJpy = si.getPriceJpy();
                     if (priceJpy > 0) {
                         double shares = val * usdJpyRate / priceJpy;
                         return new SimpleStringProperty(formatNumber(shares));
@@ -881,51 +933,56 @@ public class MainWindow {
                 }
                 return new SimpleStringProperty(String.format("$%.2fmm", val / 1e6));
             });
+            weekCol.setCellFactory(col -> new TableCell<>() {
+                @Override protected void updateItem(String item, boolean empty) {
+                    super.updateItem(item, empty);
+                    setText(empty ? null : item);
+                    setStyle(getTableRow() != null && getTableRow().getItem() != null
+                            && isSummaryRow(getTableRow().getItem())
+                            ? boldStyle + " -fx-alignment: CENTER-RIGHT;" : "-fx-alignment: CENTER-RIGHT;");
+                }
+            });
             weekCol.setPrefWidth(100);
-            weekCol.setStyle("-fx-alignment: CENTER-RIGHT;");
             scheduleTable.getColumns().add(weekCol);
         }
-
-        // Update running total / % completed summary rows
-        updateScheduleSummary(totalWeeks);
     }
 
-    private void updateScheduleSummary(int totalWeeks) {
-        if (lastSchedule == null || totalWeeks == 0) {
-            scheduleSummaryBox.setVisible(false);
-            scheduleSummaryBox.setManaged(false);
-            return;
-        }
+    /**
+     * Build two sentinel ScheduleItem rows for cumulative $ and cumulative %.
+     * The weeks list holds pre-computed running totals (USD for $ row, percentage for % row).
+     */
+    private List<ScheduleItem> buildSummaryRows(ScheduleResponse response) {
+        int totalWeeks = response.getTotalWeeks();
+        double totalAmount = response.getAmountUsd();
 
-        double totalAmount = lastSchedule.getAmountUsd();
-
-        StringBuilder totalLine = new StringBuilder("Cumulative $:  ");
-        StringBuilder pctLine = new StringBuilder("Cumulative %:  ");
+        List<Double> cumulUsd = new ArrayList<>();
+        List<Double> cumulPct = new ArrayList<>();
 
         double runningSum = 0.0;
         for (int w = 0; w < totalWeeks; w++) {
             double weekSum = 0.0;
-            for (ScheduleItem item : lastSchedule.getItems()) {
+            for (ScheduleItem item : response.getItems()) {
                 List<Double> weeks = item.getWeeks();
                 if (weeks != null && w < weeks.size()) {
                     weekSum += weeks.get(w);
                 }
             }
             runningSum += weekSum;
-            double pct = totalAmount > 0 ? (runningSum / totalAmount) * 100.0 : 0.0;
-            String weekLabel = "Wk" + (w + 1) + ": ";
-            totalLine.append(weekLabel).append(String.format("$%,.1fmm", runningSum / 1e6));
-            pctLine.append(weekLabel).append(String.format("%,.1f%%", pct));
-            if (w < totalWeeks - 1) {
-                totalLine.append("  |  ");
-                pctLine.append("  |  ");
-            }
+            cumulUsd.add(runningSum);
+            cumulPct.add(totalAmount > 0 ? (runningSum / totalAmount) * 100.0 : 0.0);
         }
 
-        runningTotalLabel.setText(totalLine.toString());
-        runningPctLabel.setText(pctLine.toString());
-        scheduleSummaryBox.setVisible(true);
-        scheduleSummaryBox.setManaged(true);
+        ScheduleItem usdRow = new ScheduleItem();
+        usdRow.setSymbol(CUMUL_USD_MARKER);
+        usdRow.setName("Cumulative $");
+        usdRow.setWeeks(cumulUsd);
+
+        ScheduleItem pctRow = new ScheduleItem();
+        pctRow.setSymbol(CUMUL_PCT_MARKER);
+        pctRow.setName("Cumulative %");
+        pctRow.setWeeks(cumulPct);
+
+        return List.of(usdRow, pctRow);
     }
 
     private void openSubRedDialog(String direction) {
@@ -1003,7 +1060,10 @@ public class MainWindow {
                             dirLabel, response.getAmountUsd() / 1e6, modeLabel, response.getTotalWeeks()));
 
                     buildScheduleColumns(response.getTotalWeeks());
-                    scheduleTable.getItems().setAll(response.getItems());
+                    List<ScheduleItem> tableItems = new ArrayList<>();
+                    tableItems.addAll(buildSummaryRows(response));
+                    tableItems.addAll(response.getItems());
+                    scheduleTable.getItems().setAll(tableItems);
                     setStatus("Schedule computed: " + response.getItems().size() + " positions, "
                             + response.getTotalWeeks() + " weeks");
                 }
