@@ -180,8 +180,6 @@ class PortfolioManager(QMainWindow):
         QShortcut(QKeySequence("Ctrl+="), self, self._increase_font)
         QShortcut(QKeySequence("Ctrl+0"), self, self._reset_font)
 
-        settings = mb.addMenu("Settings")
-
     # =====================================================================
     #  FONT SCALING
     # =====================================================================
@@ -705,6 +703,7 @@ class PortfolioManager(QMainWindow):
             lambda v, s: self._update_progress(progress, v, s)
         )
         self._price_worker.completed.connect(progress.close)
+        self._price_worker.completed.connect(self._refresh_portfolio_display)
         self._price_worker.error.connect(
             lambda msg: self._on_import_error(progress, msg)
         )

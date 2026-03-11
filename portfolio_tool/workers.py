@@ -3,68 +3,31 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
-
-import requests as http_requests
+from datetime import datetime, timedelta
 
 import pandas as pd
 from PyQt5.QtCore import QThread, pyqtSignal
 
+from .jquants import fetch_usd_jpy_rate, jquants_get
 from .models import FilingRecord, FundPosition, Position
-
-
-# ---------------------------------------------------------------------------
-# J-Quants V2 API helpers (mirrors api_server.py)
-# ---------------------------------------------------------------------------
-
-_JQUANTS_API_KEY = "IsSPKDgnOojzoMEjBGhivJuw7_c9FBPlPDzt4iuYPdc"
-_JQUANTS_BASE_URL = "https://api.jquants.com/v2"
-
-
-def _jquants_get(path: str, params: dict | None = None) -> dict:
-    """Make an authenticated GET request to J-Quants V2 API."""
-    resp = http_requests.get(
-        f"{_JQUANTS_BASE_URL}{path}",
-        headers={"x-api-key": _JQUANTS_API_KEY},
-        params=params or {},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def _fetch_usd_jpy_rate() -> float | None:
-    """Fetch current USD/JPY rate from a public API."""
-    try:
-        resp = http_requests.get(
-            "https://api.exchangerate-api.com/v4/latest/USD",
-            timeout=10,
-        )
-        resp.raise_for_status()
-        rate = resp.json().get("rates", {}).get("JPY")
-        if rate and float(rate) > 1.0:
-            return float(rate)
-    except Exception:
-        pass
-    return None
 
 
 def _fetch_jquants_price(symbol: str) -> float:
     """Fetch the latest closing price for a TSE stock from J-Quants."""
     try:
         code = symbol if len(symbol) >= 5 else f"{symbol}0"
-        from datetime import timedelta
         end = datetime.now()
         start = end - timedelta(days=10)
-        data = _jquants_get("/equities/bars/daily", {
+        data = jquants_get("/equities/bars/daily", {
             "code": code,
-            "from": start.strftime("%Y-%m-%d"),
-            "to": end.strftime("%Y-%m-%d"),
+            "from": start.strftime("%Y%m%d"),
+            "to": end.strftime("%Y%m%d"),
         })
-        bars = data.get("daily_quotes", [])
+        bars = data.get("data") or data.get("daily_quotes") or []
         if bars:
             last_bar = bars[-1]
-            price = last_bar.get("Close") or last_bar.get("AdjustmentClose")
+            price = (last_bar.get("Close") or last_bar.get("AdjClose")
+                     or last_bar.get("AdjustmentClose"))
             if price is not None:
                 return float(price)
     except Exception:
@@ -82,7 +45,7 @@ class ExchangeRateWorker(QThread):
     rate_updated = pyqtSignal(float)
 
     def run(self) -> None:
-        rate = _fetch_usd_jpy_rate()
+        rate = fetch_usd_jpy_rate()
         if rate is not None:
             self.rate_updated.emit(rate)
 
@@ -109,7 +72,7 @@ class PriceRefreshWorker(QThread):
             total = len(self.portfolio)
             # Exchange rate first
             self.progress_updated.emit(0, "Fetching USD/JPY exchange rate...")
-            rate = _fetch_usd_jpy_rate()
+            rate = fetch_usd_jpy_rate()
             if rate is not None:
                 self.price_updated.emit("USD/JPY", rate)
 
