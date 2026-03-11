@@ -36,6 +36,23 @@ public class ApiClient {
         this.mapper = new ObjectMapper();
     }
 
+    // -- Helpers for error responses ------------------------------------------
+
+    private String extractErrorDetail(String body, String fallback) {
+        try {
+            JsonNode node = mapper.readTree(body);
+            if (node.has("detail")) {
+                JsonNode detail = node.get("detail");
+                if (detail.isTextual()) return detail.asText();
+                if (detail.isArray() && detail.size() > 0) {
+                    return detail.get(0).has("msg") ? detail.get(0).get("msg").asText() : detail.toString();
+                }
+                return detail.toString();
+            }
+        } catch (Exception ignored) {}
+        return fallback;
+    }
+
     // -- Status ---------------------------------------------------------------
 
     public boolean isConnected() {
@@ -73,11 +90,11 @@ public class ApiClient {
                 .build();
 
         try (Response resp = http.newCall(req).execute()) {
-            JsonNode node = mapper.readTree(resp.body().string());
+            String respBody = resp.body().string();
             if (!resp.isSuccessful()) {
-                throw new IOException(node.has("detail") ? node.get("detail").asText() : "Import failed");
+                throw new IOException(extractErrorDetail(respBody, "Import failed"));
             }
-            return node.get("message").asText();
+            return mapper.readTree(respBody).get("message").asText();
         }
     }
 
@@ -116,11 +133,11 @@ public class ApiClient {
                 .delete()
                 .build();
         try (Response resp = http.newCall(req).execute()) {
-            JsonNode node = mapper.readTree(resp.body().string());
+            String respBody = resp.body().string();
             if (!resp.isSuccessful()) {
-                throw new IOException(node.has("detail") ? node.get("detail").asText() : "Delete failed");
+                throw new IOException(extractErrorDetail(respBody, "Delete failed"));
             }
-            return node.get("message").asText();
+            return mapper.readTree(respBody).get("message").asText();
         }
     }
 
@@ -169,11 +186,11 @@ public class ApiClient {
                 .delete()
                 .build();
         try (Response resp = http.newCall(req).execute()) {
-            JsonNode node = mapper.readTree(resp.body().string());
+            String respBody = resp.body().string();
             if (!resp.isSuccessful()) {
-                throw new IOException(node.has("detail") ? node.get("detail").asText() : "Delete failed");
+                throw new IOException(extractErrorDetail(respBody, "Delete failed"));
             }
-            return node.get("message").asText();
+            return mapper.readTree(respBody).get("message").asText();
         }
     }
 
@@ -188,11 +205,11 @@ public class ApiClient {
                 .build();
 
         try (Response resp = http.newCall(req).execute()) {
-            JsonNode node = mapper.readTree(resp.body().string());
+            String respBody = resp.body().string();
             if (!resp.isSuccessful()) {
-                throw new IOException(node.has("detail") ? node.get("detail").asText() : "Update failed");
+                throw new IOException(extractErrorDetail(respBody, "Update failed"));
             }
-            return node.get("message").asText();
+            return mapper.readTree(respBody).get("message").asText();
         }
     }
 
@@ -218,11 +235,11 @@ public class ApiClient {
                 .build();
 
         try (Response resp = http.newCall(req).execute()) {
-            JsonNode node = mapper.readTree(resp.body().string());
+            String respBody = resp.body().string();
             if (!resp.isSuccessful()) {
-                throw new IOException(node.has("detail") ? node.get("detail").asText() : "Import failed");
+                throw new IOException(extractErrorDetail(respBody, "Import failed"));
             }
-            return node.get("message").asText();
+            return mapper.readTree(respBody).get("message").asText();
         }
     }
 
@@ -245,11 +262,11 @@ public class ApiClient {
                 .build();
 
         try (Response resp = http.newCall(req).execute()) {
-            JsonNode node = mapper.readTree(resp.body().string());
+            String respBody = resp.body().string();
             if (!resp.isSuccessful()) {
-                throw new IOException(node.has("detail") ? node.get("detail").asText() : "Refresh failed");
+                throw new IOException(extractErrorDetail(respBody, "Refresh failed"));
             }
-            return node.get("message").asText();
+            return mapper.readTree(respBody).get("message").asText();
         }
     }
 
@@ -262,11 +279,11 @@ public class ApiClient {
                 .build();
 
         try (Response resp = http.newCall(req).execute()) {
-            JsonNode node = mapper.readTree(resp.body().string());
+            String respBody = resp.body().string();
             if (!resp.isSuccessful()) {
-                throw new IOException(node.has("detail") ? node.get("detail").asText() : "Metrics refresh failed");
+                throw new IOException(extractErrorDetail(respBody, "Metrics refresh failed"));
             }
-            return node.get("message").asText();
+            return mapper.readTree(respBody).get("message").asText();
         }
     }
 
@@ -286,8 +303,7 @@ public class ApiClient {
         try (Response resp = http.newCall(req).execute()) {
             String body = resp.body().string();
             if (!resp.isSuccessful()) {
-                JsonNode node = mapper.readTree(body);
-                throw new IOException(node.has("detail") ? node.get("detail").asText() : "Schedule calculation failed");
+                throw new IOException(extractErrorDetail(body, "Schedule calculation failed"));
             }
             return mapper.readValue(body, ScheduleResponse.class);
         }
@@ -324,11 +340,11 @@ public class ApiClient {
                 .build();
 
         try (Response resp = http.newCall(req).execute()) {
-            JsonNode node = mapper.readTree(resp.body().string());
+            String respBody = resp.body().string();
             if (!resp.isSuccessful()) {
-                throw new IOException(node.has("detail") ? node.get("detail").asText() : "Request failed");
+                throw new IOException(extractErrorDetail(respBody, "Request failed"));
             }
-            return node.get("message").asText();
+            return mapper.readTree(respBody).get("message").asText();
         }
     }
 }
