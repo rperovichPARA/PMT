@@ -68,6 +68,7 @@ def compute_schedule(
             "symbol": p["symbol"],
             "name": p["name"],
             "total_quantity": p["total_quantity"],
+            "price": p["price"],
             "current_value_usd": p["current_value_usd"],
             "target_change_usd": change_usd,
             "adv_10pct": adv,

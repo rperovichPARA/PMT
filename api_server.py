@@ -1830,6 +1830,7 @@ class ScheduleItem(BaseModel):
     symbol: str
     name: str
     total_quantity: float
+    price_jpy: float
     current_value_usd: float
     target_change_usd: float
     trading_days: float
@@ -1840,6 +1841,7 @@ class ScheduleResponse(BaseModel):
     direction: str
     mode: str
     amount_usd: float
+    usd_jpy_rate: float
     total_weeks: int
     items: list[ScheduleItem]
 
@@ -1885,6 +1887,7 @@ def calculate_schedule(req: ScheduleRequest):
             symbol=r["symbol"],
             name=r["name"],
             total_quantity=r["total_quantity"],
+            price_jpy=r.get("price", 0.0),
             current_value_usd=r["current_value_usd"],
             target_change_usd=r["target_change_usd"],
             trading_days=r["trading_days"],
@@ -1897,6 +1900,7 @@ def calculate_schedule(req: ScheduleRequest):
         direction=req.direction,
         mode=req.mode,
         amount_usd=amount_usd,
+        usd_jpy_rate=rate,
         total_weeks=total_weeks,
         items=items,
     )
