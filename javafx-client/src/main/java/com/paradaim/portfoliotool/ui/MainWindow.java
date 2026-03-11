@@ -90,9 +90,22 @@ public class MainWindow {
     //  UI Construction
     // =========================================================================
 
+    // Sub/Red tab components
+    private TableView<ScheduleItem> scheduleTable;
+    private Label scheduleInfoLabel;
+    private ScheduleResponse lastSchedule;
+
     private void buildUI() {
         root.setTop(buildMenuBar());
-        root.setCenter(buildMainContent());
+
+        TabPane tabPane = new TabPane();
+        tabPane.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
+
+        Tab portfolioTab = new Tab("Current Portfolio", buildMainContent());
+        Tab subRedTab = new Tab("Subscription/Redemption", buildSubRedTab());
+
+        tabPane.getTabs().addAll(portfolioTab, subRedTab);
+        root.setCenter(tabPane);
         root.setBottom(buildStatusBar());
     }
 
@@ -693,6 +706,175 @@ public class MainWindow {
 
         panel.getChildren().addAll(header, toolbar, tradesTable, netLabel);
         return panel;
+    }
+
+    // -- Subscription/Redemption tab ------------------------------------------
+
+    private VBox buildSubRedTab() {
+        VBox tab = new VBox(8);
+        tab.setPadding(new Insets(8));
+
+        // Toolbar
+        HBox toolbar = new HBox(8);
+        toolbar.setAlignment(Pos.CENTER_LEFT);
+
+        Button subBtn = new Button("Create Subscription");
+        subBtn.setOnAction(e -> openSubRedDialog("subscription"));
+        Button redBtn = new Button("Create Redemption");
+        redBtn.setOnAction(e -> openSubRedDialog("redemption"));
+
+        toolbar.getChildren().addAll(subBtn, redBtn);
+
+        // Info label
+        scheduleInfoLabel = new Label("Import a portfolio and click Create Subscription or Create Redemption to generate a schedule.");
+        scheduleInfoLabel.setStyle("-fx-font-size: 13px;");
+
+        // Schedule table
+        scheduleTable = new TableView<>();
+        scheduleTable.setPlaceholder(new Label("No schedule computed yet"));
+        VBox.setVgrow(scheduleTable, Priority.ALWAYS);
+
+        tab.getChildren().addAll(toolbar, scheduleInfoLabel, scheduleTable);
+        return tab;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void buildScheduleColumns(int totalWeeks) {
+        scheduleTable.getColumns().clear();
+
+        TableColumn<ScheduleItem, String> symCol = new TableColumn<>("Symbol");
+        symCol.setCellValueFactory(new PropertyValueFactory<>("symbol"));
+        symCol.setPrefWidth(80);
+
+        TableColumn<ScheduleItem, String> nameCol = new TableColumn<>("Name");
+        nameCol.setCellValueFactory(new PropertyValueFactory<>("name"));
+        nameCol.setPrefWidth(150);
+
+        TableColumn<ScheduleItem, String> daysCol = new TableColumn<>("Trading Days");
+        daysCol.setCellValueFactory(cd -> {
+            double td = cd.getValue().getTradingDays();
+            return new SimpleStringProperty(td > 0 ? String.format("%.1f", td) : "—");
+        });
+        daysCol.setPrefWidth(90);
+        daysCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+
+        scheduleTable.getColumns().addAll(symCol, nameCol, daysCol);
+
+        for (int w = 0; w < totalWeeks; w++) {
+            final int weekIdx = w;
+            TableColumn<ScheduleItem, String> weekCol = new TableColumn<>("Week " + (w + 1));
+            weekCol.setCellValueFactory(cd -> {
+                List<Double> weeks = cd.getValue().getWeeks();
+                if (weeks == null || weekIdx >= weeks.size()) return new SimpleStringProperty("");
+                double val = weeks.get(weekIdx) / 1e6;
+                return new SimpleStringProperty(String.format("$%.2fmm", val));
+            });
+            weekCol.setPrefWidth(100);
+            weekCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+
+            // Color-code cells based on direction
+            weekCol.setCellFactory(col -> new TableCell<>() {
+                @Override
+                protected void updateItem(String item, boolean empty) {
+                    super.updateItem(item, empty);
+                    if (empty || item == null || item.isEmpty()) {
+                        setText(null);
+                        setStyle("-fx-alignment: CENTER-RIGHT;");
+                        return;
+                    }
+                    setText(item);
+                    if (lastSchedule != null && "redemption".equals(lastSchedule.getDirection())) {
+                        setStyle("-fx-alignment: CENTER-RIGHT; -fx-background-color: #ffc7ce;");
+                    } else {
+                        setStyle("-fx-alignment: CENTER-RIGHT; -fx-background-color: #c6efce;");
+                    }
+                }
+            });
+            scheduleTable.getColumns().add(weekCol);
+        }
+    }
+
+    private void openSubRedDialog(String direction) {
+        String title = "subscription".equals(direction) ? "Create Subscription" : "Create Redemption";
+
+        Dialog<double[]> dialog = new Dialog<>();
+        dialog.setTitle(title);
+        dialog.setResizable(true);
+
+        ButtonType calcBtn = new ButtonType("Calculate", ButtonBar.ButtonData.OK_DONE);
+        dialog.getDialogPane().getButtonTypes().addAll(calcBtn, ButtonType.CANCEL);
+
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(10);
+        grid.setPadding(new Insets(20));
+
+        TextField usdField = new TextField();
+        usdField.setPromptText("e.g. 500");
+
+        ToggleGroup modeGroup = new ToggleGroup();
+        RadioButton maintainRadio = new RadioButton("Maintain Weights");
+        maintainRadio.setToggleGroup(modeGroup);
+        maintainRadio.setSelected(true);
+        RadioButton minimizeRadio = new RadioButton("Minimize Time");
+        minimizeRadio.setToggleGroup(modeGroup);
+
+        grid.add(new Label("Amount (USD millions):"), 0, 0);
+        grid.add(usdField, 1, 0);
+        grid.add(new Label("Execution Mode:"), 0, 1);
+        VBox modeBox = new VBox(4, maintainRadio, minimizeRadio);
+        grid.add(modeBox, 1, 1);
+
+        dialog.getDialogPane().setContent(grid);
+        dialog.getDialogPane().setPrefWidth(400);
+
+        // Convert result
+        dialog.setResultConverter(btn -> {
+            if (btn == calcBtn) {
+                try {
+                    double amount = Double.parseDouble(usdField.getText().trim());
+                    double modeVal = maintainRadio.isSelected() ? 0 : 1;
+                    return new double[]{amount, modeVal};
+                } catch (NumberFormatException ex) {
+                    return null;
+                }
+            }
+            return null;
+        });
+
+        dialog.showAndWait().ifPresent(result -> {
+            if (result == null) {
+                showError("Error", "Please enter a valid amount.");
+                return;
+            }
+            double amountMm = result[0];
+            String mode = result[1] == 0 ? "maintain_weights" : "minimize_time";
+
+            if (amountMm <= 0) {
+                showError("Error", "Amount must be positive.");
+                return;
+            }
+
+            setStatus("Calculating " + direction + " schedule...");
+            runAsync(
+                () -> api.calculateSchedule(amountMm, mode, direction),
+                response -> {
+                    lastSchedule = response;
+                    String modeLabel = "maintain_weights".equals(response.getMode())
+                            ? "Maintain Weights" : "Minimize Time";
+                    String dirLabel = response.getDirection().substring(0, 1).toUpperCase()
+                            + response.getDirection().substring(1);
+                    scheduleInfoLabel.setText(String.format(
+                            "%s  |  Amount: $%,.1fmm USD  |  Mode: %s  |  Total Weeks: %d",
+                            dirLabel, response.getAmountUsd() / 1e6, modeLabel, response.getTotalWeeks()));
+
+                    buildScheduleColumns(response.getTotalWeeks());
+                    scheduleTable.getItems().setAll(response.getItems());
+                    setStatus("Schedule computed: " + response.getItems().size() + " positions, "
+                            + response.getTotalWeeks() + " weeks");
+                }
+            );
+        });
     }
 
     // -- Status bar -----------------------------------------------------------

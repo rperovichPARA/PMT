@@ -1817,6 +1817,90 @@ def _parse_filing_value(raw) -> float | None:
 
 
 # ---------------------------------------------------------------------------
+# Subscription / Redemption
+# ---------------------------------------------------------------------------
+
+class ScheduleRequest(BaseModel):
+    amount_usd_mm: float  # amount in millions USD
+    mode: str  # "maintain_weights" or "minimize_time"
+    direction: str  # "subscription" or "redemption"
+
+
+class ScheduleItem(BaseModel):
+    symbol: str
+    name: str
+    current_value_usd: float
+    target_change_usd: float
+    trading_days: float
+    weeks: list[float]  # USD traded per week
+
+
+class ScheduleResponse(BaseModel):
+    direction: str
+    mode: str
+    amount_usd: float
+    total_weeks: int
+    items: list[ScheduleItem]
+
+
+@app.post("/api/subscription-redemption/calculate", response_model=ScheduleResponse)
+def calculate_schedule(req: ScheduleRequest):
+    """Compute a weekly trading schedule for a subscription or redemption."""
+    from portfolio_tool.sub_red_tab import compute_schedule
+
+    portfolio = _state["portfolio"]
+    fund_names = _state["fund_names"]
+    rate = _state["usd_jpy_rate"] or DEFAULT_EXCHANGE_RATE
+    amount_usd = req.amount_usd_mm * 1e6
+
+    if not portfolio:
+        raise HTTPException(400, "No portfolio loaded")
+
+    # Validate redemption doesn't exceed portfolio
+    if req.direction == "redemption":
+        total_portfolio_usd = 0.0
+        for sym, pos in portfolio.items():
+            if sym in CASH_SYMBOLS or pos.is_cash:
+                continue
+            total_portfolio_usd += pos.price * pos.total_quantity / rate
+        if amount_usd > total_portfolio_usd:
+            raise HTTPException(
+                400,
+                f"Redemption amount (${req.amount_usd_mm:.1f}mm) exceeds "
+                f"portfolio value (${total_portfolio_usd / 1e6:.1f}mm)",
+            )
+
+    schedule = compute_schedule(
+        portfolio, fund_names, amount_usd, rate, req.mode, req.direction,
+    )
+
+    if not schedule:
+        raise HTTPException(400, "Could not compute schedule – no non-cash positions with quantity")
+
+    total_weeks = max(len(r["weeks"]) for r in schedule) if schedule else 0
+
+    items = [
+        ScheduleItem(
+            symbol=r["symbol"],
+            name=r["name"],
+            current_value_usd=r["current_value_usd"],
+            target_change_usd=r["target_change_usd"],
+            trading_days=r["trading_days"],
+            weeks=r["weeks"],
+        )
+        for r in schedule
+    ]
+
+    return ScheduleResponse(
+        direction=req.direction,
+        mode=req.mode,
+        amount_usd=amount_usd,
+        total_weeks=total_weeks,
+        items=items,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
