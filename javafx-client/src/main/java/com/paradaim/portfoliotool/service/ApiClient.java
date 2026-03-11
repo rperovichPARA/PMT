@@ -309,6 +309,32 @@ public class ApiClient {
         }
     }
 
+    // -- Correlation ----------------------------------------------------------
+
+    public CorrelationResponse calculateCorrelation(List<String> symbols, List<String> names,
+                                                     String lookback, String periodicity) throws IOException {
+        var payload = mapper.createObjectNode();
+        var symArr = payload.putArray("symbols");
+        symbols.forEach(symArr::add);
+        var nameArr = payload.putArray("names");
+        names.forEach(nameArr::add);
+        payload.put("lookback", lookback);
+        payload.put("periodicity", periodicity);
+
+        Request req = new Request.Builder()
+                .url(baseUrl + "/api/correlation/calculate")
+                .post(RequestBody.create(payload.toString(), MediaType.parse("application/json")))
+                .build();
+
+        try (Response resp = http.newCall(req).execute()) {
+            String body = resp.body().string();
+            if (!resp.isSuccessful()) {
+                throw new IOException(extractErrorDetail(body, "Correlation calculation failed"));
+            }
+            return mapper.readValue(body, CorrelationResponse.class);
+        }
+    }
+
     // -- Generic helpers ------------------------------------------------------
 
     private <T> T get(String path, Class<T> type) throws IOException {

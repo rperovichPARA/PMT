@@ -100,6 +100,15 @@ public class MainWindow {
     private static final String CUMUL_USD_MARKER = "__CUMUL_USD__";
     private static final String CUMUL_PCT_MARKER = "__CUMUL_PCT__";
 
+    // Correlation tab components
+    private TableView<CorrelationRow> corrTable;
+    private Label corrInfoLabel;
+    private ComboBox<String> corrLookbackCombo;
+    private ComboBox<String> corrPeriodicityCombo;
+    private final List<String> corrSymbols = new ArrayList<>();
+    private final List<String> corrNames = new ArrayList<>();
+    private CorrelationResponse lastCorrelation;
+
     private void buildUI() {
         root.setTop(buildMenuBar());
 
@@ -108,8 +117,9 @@ public class MainWindow {
 
         Tab portfolioTab = new Tab("Current Portfolio", buildMainContent());
         Tab subRedTab = new Tab("Subscription/Redemption", buildSubRedTab());
+        Tab corrTab = new Tab("Correlation Matrix", buildCorrelationTab());
 
-        tabPane.getTabs().addAll(portfolioTab, subRedTab);
+        tabPane.getTabs().addAll(portfolioTab, subRedTab, corrTab);
         root.setCenter(tabPane);
         root.setBottom(buildStatusBar());
     }
@@ -983,6 +993,247 @@ public class MainWindow {
         pctRow.setWeeks(cumulPct);
 
         return List.of(usdRow, pctRow);
+    }
+
+    // -- Correlation Matrix tab -----------------------------------------------
+
+    private VBox buildCorrelationTab() {
+        VBox tab = new VBox(8);
+        tab.setPadding(new Insets(8));
+
+        HBox toolbar = new HBox(8);
+        toolbar.setAlignment(Pos.CENTER_LEFT);
+
+        Button importBtn = new Button("Import Portfolio");
+        importBtn.setOnAction(e -> importPortfolioForCorrelation());
+
+        Button runBtn = new Button("Run Correlation");
+        runBtn.setOnAction(e -> runCorrelation());
+
+        corrLookbackCombo = new ComboBox<>();
+        corrLookbackCombo.getItems().addAll("6m", "1y", "2y", "3y", "5y", "10y");
+        corrLookbackCombo.setValue("3y");
+
+        corrPeriodicityCombo = new ComboBox<>();
+        corrPeriodicityCombo.getItems().addAll("Daily", "Weekly", "Monthly", "Quarterly", "Annually");
+        corrPeriodicityCombo.setValue("Weekly");
+
+        Button addCandidateBtn = new Button("Add Candidate");
+        addCandidateBtn.setOnAction(e -> showAddCandidateDialog());
+
+        toolbar.getChildren().addAll(importBtn, runBtn,
+                new Label("Lookback:"), corrLookbackCombo,
+                new Label("Periodicity:"), corrPeriodicityCombo,
+                addCandidateBtn);
+
+        corrInfoLabel = new Label("Import a portfolio, then click Run Correlation.");
+        corrInfoLabel.setStyle("-fx-font-size: 13px;");
+
+        corrTable = new TableView<>();
+        corrTable.setPlaceholder(new Label("Import a portfolio to begin"));
+        VBox.setVgrow(corrTable, Priority.ALWAYS);
+
+        tab.getChildren().addAll(toolbar, corrInfoLabel, corrTable);
+        return tab;
+    }
+
+    private void importPortfolioForCorrelation() {
+        FileChooser fc = new FileChooser();
+        fc.setTitle("Import Portfolio");
+        fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("Excel Files", "*.xlsx", "*.xls"));
+        File file = fc.showOpenDialog(stage);
+        if (file == null) return;
+
+        setStatus("Importing portfolio for correlation...");
+        ProgressDialog progress = showProgressDialog("Importing Portfolio",
+                "Reading and processing " + file.getName() + "...");
+        progress.show();
+        applyDefaultSort = true;
+        runAsync(() -> api.importPortfolio(file), msg -> {
+            progress.close();
+            setStatus(msg);
+            refreshAll();
+            loadCorrelationPositions();
+        }, progress);
+    }
+
+    private void loadCorrelationPositions() {
+        runAsync(() -> api.getPositions(), positionsList -> {
+            corrSymbols.clear();
+            corrNames.clear();
+            for (PositionData p : positionsList) {
+                if (p.isCash()) continue;
+                if (p.getTotalQuantity() <= 0) continue;
+                corrSymbols.add(p.getSymbol());
+                corrNames.add(p.getName());
+            }
+            lastCorrelation = null;
+            buildCorrPositionColumns();
+            corrInfoLabel.setText("Portfolio loaded \u2014 " + corrSymbols.size()
+                    + " symbols. Click Run Correlation to compute the matrix.");
+        });
+    }
+
+    @SuppressWarnings("unchecked")
+    private void buildCorrPositionColumns() {
+        corrTable.getColumns().clear();
+        corrTable.getItems().clear();
+
+        TableColumn<CorrelationRow, String> symCol = new TableColumn<>("Symbol");
+        symCol.setCellValueFactory(new PropertyValueFactory<>("symbol"));
+        symCol.setPrefWidth(80);
+
+        TableColumn<CorrelationRow, String> nameCol = new TableColumn<>("Name");
+        nameCol.setCellValueFactory(new PropertyValueFactory<>("name"));
+        nameCol.setPrefWidth(150);
+
+        corrTable.getColumns().addAll(symCol, nameCol);
+
+        ObservableList<CorrelationRow> items = FXCollections.observableArrayList();
+        for (int i = 0; i < corrSymbols.size(); i++) {
+            CorrelationRow row = new CorrelationRow();
+            row.setSymbol(corrSymbols.get(i));
+            row.setName(corrNames.get(i));
+            items.add(row);
+        }
+        corrTable.getItems().setAll(items);
+    }
+
+    private void runCorrelation() {
+        if (corrSymbols.size() < 2) {
+            showError("Error", "Import a portfolio with at least 2 non-cash positions first.");
+            return;
+        }
+        String lookback = corrLookbackCombo.getValue();
+        String periodicity = corrPeriodicityCombo.getValue().toLowerCase();
+
+        setStatus("Computing correlation matrix (" + lookback + " / " + periodicity + ")...");
+        corrInfoLabel.setText("Fetching historical data and computing correlations...");
+
+        runAsync(
+            () -> api.calculateCorrelation(
+                    new ArrayList<>(corrSymbols), new ArrayList<>(corrNames),
+                    lookback, periodicity),
+            response -> {
+                lastCorrelation = response;
+                buildCorrMatrixColumns(response);
+                corrTable.getItems().setAll(response.getRows());
+                corrInfoLabel.setText(String.format(
+                        "Correlation Matrix  |  %d symbols  |  Lookback: %s  |  Periodicity: %s",
+                        response.getSymbols().size(), lookback,
+                        corrPeriodicityCombo.getValue()));
+                setStatus("Correlation matrix computed for " + response.getSymbols().size() + " symbols");
+            }
+        );
+    }
+
+    @SuppressWarnings("unchecked")
+    private void buildCorrMatrixColumns(CorrelationResponse response) {
+        corrTable.getColumns().clear();
+
+        String selfStyle = "-fx-alignment: CENTER-RIGHT; -fx-background-color: #f0f0f0;";
+        String normalStyle = "-fx-alignment: CENTER-RIGHT;";
+
+        // Avg Correlation column
+        TableColumn<CorrelationRow, String> avgCol = new TableColumn<>("Avg Corr");
+        avgCol.setCellValueFactory(cd -> {
+            Double avg = cd.getValue().getAvgCorrelation();
+            return new SimpleStringProperty(avg != null ? String.format("%.2f", avg) : "");
+        });
+        avgCol.setPrefWidth(80);
+        avgCol.setStyle("-fx-alignment: CENTER-RIGHT; -fx-font-weight: bold;");
+
+        // Symbol column (row header)
+        TableColumn<CorrelationRow, String> symCol = new TableColumn<>("Symbol");
+        symCol.setCellValueFactory(new PropertyValueFactory<>("symbol"));
+        symCol.setPrefWidth(80);
+
+        corrTable.getColumns().addAll(avgCol, symCol);
+
+        // One column per symbol
+        List<String> symbols = response.getSymbols();
+        for (int j = 0; j < symbols.size(); j++) {
+            final int colIdx = j;
+            TableColumn<CorrelationRow, String> col = new TableColumn<>(symbols.get(j));
+            col.setCellValueFactory(cd -> {
+                List<Double> corrs = cd.getValue().getCorrelations();
+                if (corrs == null || colIdx >= corrs.size()) return new SimpleStringProperty("");
+                Double val = corrs.get(colIdx);
+                if (val == null) return new SimpleStringProperty("");
+                return new SimpleStringProperty(String.format("%.2f", val));
+            });
+            col.setCellFactory(c -> new TableCell<>() {
+                @Override
+                protected void updateItem(String item, boolean empty) {
+                    super.updateItem(item, empty);
+                    if (empty || item == null || item.isEmpty()) {
+                        setText(null);
+                        // Check if this is a self-correlation cell (diagonal)
+                        int rowIdx = getIndex();
+                        if (rowIdx >= 0 && rowIdx < symbols.size()
+                                && symbols.get(rowIdx).equals(symbols.get(colIdx))) {
+                            setStyle(selfStyle);
+                        } else {
+                            setStyle(normalStyle);
+                        }
+                        return;
+                    }
+                    setText(item);
+                    setStyle(normalStyle);
+                }
+            });
+            col.setPrefWidth(65);
+            corrTable.getColumns().add(col);
+        }
+    }
+
+    private void showAddCandidateDialog() {
+        Dialog<String[]> dialog = new Dialog<>();
+        dialog.setTitle("Add Candidate");
+        dialog.setResizable(true);
+
+        ButtonType addBtn = new ButtonType("Add", ButtonBar.ButtonData.OK_DONE);
+        dialog.getDialogPane().getButtonTypes().addAll(addBtn, ButtonType.CANCEL);
+
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(10);
+        grid.setPadding(new Insets(20));
+
+        TextField tickerField = new TextField();
+        tickerField.setPromptText("e.g. 6758");
+        TextField nameField = new TextField();
+        nameField.setPromptText("e.g. Sony Group Corp");
+
+        grid.add(new Label("Ticker:"), 0, 0);
+        grid.add(tickerField, 1, 0);
+        grid.add(new Label("Name:"), 0, 1);
+        grid.add(nameField, 1, 1);
+
+        dialog.getDialogPane().setContent(grid);
+        dialog.getDialogPane().setPrefWidth(350);
+
+        dialog.setResultConverter(btn -> {
+            if (btn == addBtn) {
+                String ticker = tickerField.getText().trim();
+                String name = nameField.getText().trim();
+                if (!ticker.isEmpty() && !name.isEmpty()) {
+                    return new String[]{ticker, name};
+                }
+            }
+            return null;
+        });
+
+        dialog.showAndWait().ifPresent(result -> {
+            if (result == null) {
+                showError("Error", "Both ticker and name are required.");
+                return;
+            }
+            // Add to the lists and auto-run
+            corrSymbols.add(result[0]);
+            corrNames.add(result[1]);
+            runCorrelation();
+        });
     }
 
     private void openSubRedDialog(String direction) {
