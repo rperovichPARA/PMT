@@ -11,6 +11,8 @@ public class ScheduleResponse {
     private String mode;
     @JsonProperty("amount_usd")
     private double amountUsd;
+    @JsonProperty("usd_jpy_rate")
+    private double usdJpyRate;
     @JsonProperty("total_weeks")
     private int totalWeeks;
     private List<ScheduleItem> items;
@@ -23,6 +25,9 @@ public class ScheduleResponse {
 
     public double getAmountUsd() { return amountUsd; }
     public void setAmountUsd(double v) { this.amountUsd = v; }
+
+    public double getUsdJpyRate() { return usdJpyRate; }
+    public void setUsdJpyRate(double v) { this.usdJpyRate = v; }
 
     public int getTotalWeeks() { return totalWeeks; }
     public void setTotalWeeks(int v) { this.totalWeeks = v; }

@@ -1830,6 +1830,7 @@ class ScheduleItem(BaseModel):
     symbol: str
     name: str
     total_quantity: float
+    price_jpy: float
     current_value_usd: float
     target_change_usd: float
     trading_days: float
@@ -1840,6 +1841,7 @@ class ScheduleResponse(BaseModel):
     direction: str
     mode: str
     amount_usd: float
+    usd_jpy_rate: float
     total_weeks: int
     items: list[ScheduleItem]
 
@@ -1847,7 +1849,7 @@ class ScheduleResponse(BaseModel):
 @app.post("/api/subscription-redemption/calculate", response_model=ScheduleResponse)
 def calculate_schedule(req: ScheduleRequest):
     """Compute a weekly trading schedule for a subscription or redemption."""
-    from portfolio_tool.sub_red_tab import compute_schedule
+    from portfolio_tool.schedule import compute_schedule
 
     portfolio = _state["portfolio"]
     fund_names = _state["fund_names"]
@@ -1885,6 +1887,7 @@ def calculate_schedule(req: ScheduleRequest):
             symbol=r["symbol"],
             name=r["name"],
             total_quantity=r["total_quantity"],
+            price_jpy=r.get("price", 0.0),
             current_value_usd=r["current_value_usd"],
             target_change_usd=r["target_change_usd"],
             trading_days=r["trading_days"],
@@ -1897,9 +1900,172 @@ def calculate_schedule(req: ScheduleRequest):
         direction=req.direction,
         mode=req.mode,
         amount_usd=amount_usd,
+        usd_jpy_rate=rate,
         total_weeks=total_weeks,
         items=items,
     )
+
+
+# ---------------------------------------------------------------------------
+# Correlation Matrix
+# ---------------------------------------------------------------------------
+
+class CorrelationRequest(BaseModel):
+    symbols: list[str]          # list of ticker symbols
+    names: list[str]            # corresponding names
+    lookback: str = "3y"        # 6m, 1y, 2y, 3y, 5y, 10y
+    periodicity: str = "weekly" # daily, weekly, monthly, quarterly, annually
+
+
+class CorrelationRow(BaseModel):
+    symbol: str
+    name: str
+    avg_correlation: float | None
+    correlations: list[float | None]
+
+
+class CorrelationResponse(BaseModel):
+    symbols: list[str]
+    names: list[str]
+    rows: list[CorrelationRow]
+
+
+_LOOKBACK_DAYS = {
+    "6m": 183, "1y": 365, "2y": 730, "3y": 1095, "5y": 1825, "10y": 3650,
+}
+
+
+@app.post("/api/correlation/calculate", response_model=CorrelationResponse)
+def calculate_correlation(req: CorrelationRequest):
+    """Compute pairwise return correlation matrix for a set of symbols."""
+    import numpy as np
+    from portfolio_tool.jquants import jquants_get
+
+    symbols = req.symbols
+    names = req.names
+    if len(symbols) < 2:
+        raise HTTPException(400, "At least 2 symbols required for correlation")
+    if len(symbols) != len(names):
+        raise HTTPException(400, "symbols and names must have same length")
+
+    lookback_days = _LOOKBACK_DAYS.get(req.lookback, 1095)
+    end = datetime.now()
+    start = end - timedelta(days=lookback_days)
+    start_str = start.strftime("%Y%m%d")
+    end_str = end.strftime("%Y%m%d")
+
+    # Fetch daily bars for all symbols in parallel
+    daily_data: dict[str, dict[str, float]] = {}  # symbol -> {date: close}
+
+    def _fetch_bars(symbol: str) -> tuple[str, dict[str, float]]:
+        code = symbol if len(symbol) >= 5 else f"{symbol}0"
+        try:
+            data = jquants_get("/equities/bars/daily", {
+                "code": code, "from": start_str, "to": end_str,
+            })
+            bars = data.get("data") or data.get("daily_quotes") or data.get("eq_bars_daily") or []
+            closes: dict[str, float] = {}
+            for bar in bars:
+                dt = bar.get("Date", "")
+                c = (bar.get("AdjClose") or bar.get("Close")
+                     or bar.get("AdjC") or bar.get("C"))
+                if c is not None and dt:
+                    try:
+                        closes[dt] = float(c)
+                    except (ValueError, TypeError):
+                        pass
+            return symbol, closes
+        except Exception as e:
+            print(f"  correlation: {symbol} fetch error: {e}")
+            return symbol, {}
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {pool.submit(_fetch_bars, s): s for s in symbols}
+        for f in as_completed(futures):
+            sym, closes = f.result()
+            daily_data[sym] = closes
+
+    # Find common dates across all symbols
+    date_sets = [set(daily_data[s].keys()) for s in symbols]
+    common_dates = sorted(set.intersection(*date_sets)) if date_sets else []
+
+    if len(common_dates) < 10:
+        raise HTTPException(400, f"Insufficient common trading data ({len(common_dates)} days). "
+                            "Need at least 10 common trading days across all symbols.")
+
+    # Resample to requested periodicity
+    resampled_dates = _resample_dates(common_dates, req.periodicity)
+
+    if len(resampled_dates) < 3:
+        raise HTTPException(400, f"Insufficient data points ({len(resampled_dates)}) for "
+                            f"{req.periodicity} periodicity. Try a longer lookback or finer periodicity.")
+
+    # Build price matrix and compute returns
+    n = len(symbols)
+    price_matrix = np.zeros((len(resampled_dates), n))
+    for j, sym in enumerate(symbols):
+        closes = daily_data[sym]
+        for i, dt in enumerate(resampled_dates):
+            price_matrix[i, j] = closes[dt]
+
+    # Returns = (P[t] - P[t-1]) / P[t-1]
+    returns = (price_matrix[1:] - price_matrix[:-1]) / price_matrix[:-1]
+
+    # Correlation matrix
+    corr_matrix = np.corrcoef(returns, rowvar=False)  # n x n
+
+    # Build response rows
+    rows: list[CorrelationRow] = []
+    for i in range(n):
+        corr_vals: list[float | None] = []
+        other_corrs: list[float] = []
+        for j in range(n):
+            if i == j:
+                corr_vals.append(None)
+            else:
+                val = float(corr_matrix[i, j])
+                corr_vals.append(round(val, 4))
+                other_corrs.append(val)
+        avg = round(sum(other_corrs) / len(other_corrs), 4) if other_corrs else None
+        rows.append(CorrelationRow(
+            symbol=symbols[i], name=names[i],
+            avg_correlation=avg, correlations=corr_vals,
+        ))
+
+    return CorrelationResponse(symbols=symbols, names=names, rows=rows)
+
+
+def _resample_dates(dates: list[str], periodicity: str) -> list[str]:
+    """Select dates at the requested periodicity from a sorted list of daily dates.
+
+    For each period, picks the last available date in that period.
+    """
+    if periodicity == "daily":
+        return dates
+
+    from collections import OrderedDict
+    buckets: OrderedDict[str, str] = OrderedDict()
+    for dt in dates:
+        # dt is "YYYY-MM-DD"
+        y, m, d = dt[:4], dt[5:7], dt[8:10]
+        if periodicity == "weekly":
+            # ISO week
+            from datetime import date as dt_date
+            d_obj = dt_date(int(y), int(m), int(d))
+            iso = d_obj.isocalendar()
+            key = f"{iso[0]}-W{iso[1]:02d}"
+        elif periodicity == "monthly":
+            key = f"{y}-{m}"
+        elif periodicity == "quarterly":
+            q = (int(m) - 1) // 3 + 1
+            key = f"{y}-Q{q}"
+        elif periodicity == "annually":
+            key = y
+        else:
+            key = dt
+        buckets[key] = dt  # last date in each bucket wins
+
+    return list(buckets.values())
 
 
 # ---------------------------------------------------------------------------

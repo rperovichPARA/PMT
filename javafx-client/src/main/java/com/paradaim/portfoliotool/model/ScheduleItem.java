@@ -13,6 +13,8 @@ public class ScheduleItem {
     private double currentValueUsd;
     @JsonProperty("total_quantity")
     private double totalQuantity;
+    @JsonProperty("price_jpy")
+    private double priceJpy;
     @JsonProperty("target_change_usd")
     private double targetChangeUsd;
     @JsonProperty("trading_days")
@@ -27,6 +29,9 @@ public class ScheduleItem {
 
     public double getTotalQuantity() { return totalQuantity; }
     public void setTotalQuantity(double v) { this.totalQuantity = v; }
+
+    public double getPriceJpy() { return priceJpy; }
+    public void setPriceJpy(double v) { this.priceJpy = v; }
 
     public double getCurrentValueUsd() { return currentValueUsd; }
     public void setCurrentValueUsd(double v) { this.currentValueUsd = v; }

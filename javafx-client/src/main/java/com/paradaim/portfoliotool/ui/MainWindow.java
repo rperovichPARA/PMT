@@ -94,6 +94,20 @@ public class MainWindow {
     private TableView<ScheduleItem> scheduleTable;
     private Label scheduleInfoLabel;
     private ScheduleResponse lastSchedule;
+    private boolean showShares = false;  // false = show $ amount (default), true = show shares
+    private ToggleButton displayToggle;
+
+    private static final String CUMUL_USD_MARKER = "__CUMUL_USD__";
+    private static final String CUMUL_PCT_MARKER = "__CUMUL_PCT__";
+
+    // Correlation tab components
+    private TableView<CorrelationRow> corrTable;
+    private Label corrInfoLabel;
+    private ComboBox<String> corrLookbackCombo;
+    private ComboBox<String> corrPeriodicityCombo;
+    private final List<String> corrSymbols = new ArrayList<>();
+    private final List<String> corrNames = new ArrayList<>();
+    private CorrelationResponse lastCorrelation;
 
     private void buildUI() {
         root.setTop(buildMenuBar());
@@ -103,8 +117,9 @@ public class MainWindow {
 
         Tab portfolioTab = new Tab("Current Portfolio", buildMainContent());
         Tab subRedTab = new Tab("Subscription/Redemption", buildSubRedTab());
+        Tab corrTab = new Tab("Correlation Matrix", buildCorrelationTab());
 
-        tabPane.getTabs().addAll(portfolioTab, subRedTab);
+        tabPane.getTabs().addAll(portfolioTab, subRedTab, corrTab);
         root.setCenter(tabPane);
         root.setBottom(buildStatusBar());
     }
@@ -725,7 +740,21 @@ public class MainWindow {
         Button redBtn = new Button("Create Redemption");
         redBtn.setOnAction(e -> openSubRedDialog("redemption"));
 
-        toolbar.getChildren().addAll(importBtn, subBtn, redBtn);
+        displayToggle = new ToggleButton("Show Shares");
+        displayToggle.setSelected(false);
+        displayToggle.setOnAction(e -> {
+            showShares = displayToggle.isSelected();
+            displayToggle.setText(showShares ? "Show Amount" : "Show Shares");
+            if (lastSchedule != null) {
+                buildScheduleColumns(lastSchedule.getTotalWeeks());
+                List<ScheduleItem> tableItems = new ArrayList<>();
+                tableItems.addAll(buildSummaryRows(lastSchedule));
+                tableItems.addAll(lastSchedule.getItems());
+                scheduleTable.getItems().setAll(tableItems);
+            }
+        });
+
+        toolbar.getChildren().addAll(importBtn, subBtn, redBtn, displayToggle);
 
         // Info label
         scheduleInfoLabel = new Label("Import a portfolio and click Create Subscription or Create Redemption to generate a schedule.");
@@ -777,7 +806,7 @@ public class MainWindow {
             }
             scheduleTable.getItems().setAll(items);
             lastSchedule = null;
-            scheduleInfoLabel.setText("Portfolio loaded — " + items.size()
+            scheduleInfoLabel.setText("Portfolio loaded \u2014 " + items.size()
                     + " positions. Click Create Subscription or Create Redemption to generate a schedule.");
         });
     }
@@ -805,68 +834,406 @@ public class MainWindow {
         scheduleTable.getColumns().addAll(symCol, nameCol, qtyCol);
     }
 
+    private boolean isSummaryRow(ScheduleItem item) {
+        String sym = item.getSymbol();
+        return CUMUL_USD_MARKER.equals(sym) || CUMUL_PCT_MARKER.equals(sym);
+    }
+
     @SuppressWarnings("unchecked")
     private void buildScheduleColumns(int totalWeeks) {
         scheduleTable.getColumns().clear();
 
+        String boldStyle = "-fx-font-weight: bold; -fx-background-color: #f0f0f0;";
+
         TableColumn<ScheduleItem, String> symCol = new TableColumn<>("Symbol");
-        symCol.setCellValueFactory(new PropertyValueFactory<>("symbol"));
+        symCol.setCellValueFactory(cd -> {
+            if (isSummaryRow(cd.getValue())) return new SimpleStringProperty("");
+            return new SimpleStringProperty(cd.getValue().getSymbol());
+        });
+        symCol.setCellFactory(col -> new TableCell<>() {
+            @Override protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty ? null : item);
+                setStyle(getTableRow() != null && getTableRow().getItem() != null
+                        && isSummaryRow(getTableRow().getItem())
+                        ? boldStyle : "");
+            }
+        });
         symCol.setPrefWidth(80);
 
         TableColumn<ScheduleItem, String> nameCol = new TableColumn<>("Name");
-        nameCol.setCellValueFactory(new PropertyValueFactory<>("name"));
+        nameCol.setCellValueFactory(cd -> {
+            ScheduleItem si = cd.getValue();
+            if (CUMUL_USD_MARKER.equals(si.getSymbol())) return new SimpleStringProperty("Cumulative $");
+            if (CUMUL_PCT_MARKER.equals(si.getSymbol())) return new SimpleStringProperty("Cumulative %");
+            return new SimpleStringProperty(si.getName());
+        });
+        nameCol.setCellFactory(col -> new TableCell<>() {
+            @Override protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty ? null : item);
+                setStyle(getTableRow() != null && getTableRow().getItem() != null
+                        && isSummaryRow(getTableRow().getItem())
+                        ? boldStyle : "");
+            }
+        });
         nameCol.setPrefWidth(150);
 
         TableColumn<ScheduleItem, String> qtyCol = new TableColumn<>("Quantity");
         qtyCol.setCellValueFactory(cd -> {
+            if (isSummaryRow(cd.getValue())) return new SimpleStringProperty("");
             double qty = cd.getValue().getTotalQuantity();
             return new SimpleStringProperty(formatNumber(qty));
         });
+        qtyCol.setCellFactory(col -> new TableCell<>() {
+            @Override protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty ? null : item);
+                setStyle(getTableRow() != null && getTableRow().getItem() != null
+                        && isSummaryRow(getTableRow().getItem())
+                        ? boldStyle + " -fx-alignment: CENTER-RIGHT;" : "-fx-alignment: CENTER-RIGHT;");
+            }
+        });
         qtyCol.setPrefWidth(100);
-        qtyCol.setStyle("-fx-alignment: CENTER-RIGHT;");
 
         TableColumn<ScheduleItem, String> daysCol = new TableColumn<>("Trading Days");
         daysCol.setCellValueFactory(cd -> {
+            if (isSummaryRow(cd.getValue())) return new SimpleStringProperty("");
             double td = cd.getValue().getTradingDays();
-            return new SimpleStringProperty(td > 0 ? String.format("%.1f", td) : "—");
+            return new SimpleStringProperty(td > 0 ? String.format("%.1f", td) : "\u2014");
+        });
+        daysCol.setCellFactory(col -> new TableCell<>() {
+            @Override protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty ? null : item);
+                setStyle(getTableRow() != null && getTableRow().getItem() != null
+                        && isSummaryRow(getTableRow().getItem())
+                        ? boldStyle + " -fx-alignment: CENTER-RIGHT;" : "-fx-alignment: CENTER-RIGHT;");
+            }
         });
         daysCol.setPrefWidth(90);
-        daysCol.setStyle("-fx-alignment: CENTER-RIGHT;");
 
         scheduleTable.getColumns().addAll(symCol, nameCol, qtyCol, daysCol);
+
+        double usdJpyRate = lastSchedule != null ? lastSchedule.getUsdJpyRate() : 1.0;
 
         for (int w = 0; w < totalWeeks; w++) {
             final int weekIdx = w;
             TableColumn<ScheduleItem, String> weekCol = new TableColumn<>("Week " + (w + 1));
             weekCol.setCellValueFactory(cd -> {
-                List<Double> weeks = cd.getValue().getWeeks();
+                ScheduleItem si = cd.getValue();
+                List<Double> weeks = si.getWeeks();
                 if (weeks == null || weekIdx >= weeks.size()) return new SimpleStringProperty("");
-                double val = weeks.get(weekIdx) / 1e6;
-                return new SimpleStringProperty(String.format("$%.2fmm", val));
+                double val = weeks.get(weekIdx);
+
+                if (CUMUL_USD_MARKER.equals(si.getSymbol())) {
+                    return new SimpleStringProperty(String.format("$%,.1fmm", val / 1e6));
+                }
+                if (CUMUL_PCT_MARKER.equals(si.getSymbol())) {
+                    return new SimpleStringProperty(String.format("%,.1f%%", val));
+                }
+
+                if (showShares) {
+                    double priceJpy = si.getPriceJpy();
+                    if (priceJpy > 0) {
+                        double shares = val * usdJpyRate / priceJpy;
+                        return new SimpleStringProperty(formatNumber(shares));
+                    }
+                    return new SimpleStringProperty("\u2014");
+                }
+                return new SimpleStringProperty(String.format("$%.2fmm", val / 1e6));
+            });
+            weekCol.setCellFactory(col -> new TableCell<>() {
+                @Override protected void updateItem(String item, boolean empty) {
+                    super.updateItem(item, empty);
+                    setText(empty ? null : item);
+                    setStyle(getTableRow() != null && getTableRow().getItem() != null
+                            && isSummaryRow(getTableRow().getItem())
+                            ? boldStyle + " -fx-alignment: CENTER-RIGHT;" : "-fx-alignment: CENTER-RIGHT;");
+                }
             });
             weekCol.setPrefWidth(100);
-            weekCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+            scheduleTable.getColumns().add(weekCol);
+        }
+    }
 
-            // Color-code cells based on direction
-            weekCol.setCellFactory(col -> new TableCell<>() {
+    /**
+     * Build two sentinel ScheduleItem rows for cumulative $ and cumulative %.
+     * The weeks list holds pre-computed running totals (USD for $ row, percentage for % row).
+     */
+    private List<ScheduleItem> buildSummaryRows(ScheduleResponse response) {
+        int totalWeeks = response.getTotalWeeks();
+        double totalAmount = response.getAmountUsd();
+
+        List<Double> cumulUsd = new ArrayList<>();
+        List<Double> cumulPct = new ArrayList<>();
+
+        double runningSum = 0.0;
+        for (int w = 0; w < totalWeeks; w++) {
+            double weekSum = 0.0;
+            for (ScheduleItem item : response.getItems()) {
+                List<Double> weeks = item.getWeeks();
+                if (weeks != null && w < weeks.size()) {
+                    weekSum += weeks.get(w);
+                }
+            }
+            runningSum += weekSum;
+            cumulUsd.add(runningSum);
+            cumulPct.add(totalAmount > 0 ? (runningSum / totalAmount) * 100.0 : 0.0);
+        }
+
+        ScheduleItem usdRow = new ScheduleItem();
+        usdRow.setSymbol(CUMUL_USD_MARKER);
+        usdRow.setName("Cumulative $");
+        usdRow.setWeeks(cumulUsd);
+
+        ScheduleItem pctRow = new ScheduleItem();
+        pctRow.setSymbol(CUMUL_PCT_MARKER);
+        pctRow.setName("Cumulative %");
+        pctRow.setWeeks(cumulPct);
+
+        return List.of(usdRow, pctRow);
+    }
+
+    // -- Correlation Matrix tab -----------------------------------------------
+
+    private VBox buildCorrelationTab() {
+        VBox tab = new VBox(8);
+        tab.setPadding(new Insets(8));
+
+        HBox toolbar = new HBox(8);
+        toolbar.setAlignment(Pos.CENTER_LEFT);
+
+        Button importBtn = new Button("Import Portfolio");
+        importBtn.setOnAction(e -> importPortfolioForCorrelation());
+
+        Button runBtn = new Button("Run Correlation");
+        runBtn.setOnAction(e -> runCorrelation());
+
+        corrLookbackCombo = new ComboBox<>();
+        corrLookbackCombo.getItems().addAll("6m", "1y", "2y", "3y", "5y", "10y");
+        corrLookbackCombo.setValue("3y");
+
+        corrPeriodicityCombo = new ComboBox<>();
+        corrPeriodicityCombo.getItems().addAll("Daily", "Weekly", "Monthly", "Quarterly", "Annually");
+        corrPeriodicityCombo.setValue("Weekly");
+
+        Button addCandidateBtn = new Button("Add Candidate");
+        addCandidateBtn.setOnAction(e -> showAddCandidateDialog());
+
+        toolbar.getChildren().addAll(importBtn, runBtn,
+                new Label("Lookback:"), corrLookbackCombo,
+                new Label("Periodicity:"), corrPeriodicityCombo,
+                addCandidateBtn);
+
+        corrInfoLabel = new Label("Import a portfolio, then click Run Correlation.");
+        corrInfoLabel.setStyle("-fx-font-size: 13px;");
+
+        corrTable = new TableView<>();
+        corrTable.setPlaceholder(new Label("Import a portfolio to begin"));
+        VBox.setVgrow(corrTable, Priority.ALWAYS);
+
+        tab.getChildren().addAll(toolbar, corrInfoLabel, corrTable);
+        return tab;
+    }
+
+    private void importPortfolioForCorrelation() {
+        FileChooser fc = new FileChooser();
+        fc.setTitle("Import Portfolio");
+        fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("Excel Files", "*.xlsx", "*.xls"));
+        File file = fc.showOpenDialog(stage);
+        if (file == null) return;
+
+        setStatus("Importing portfolio for correlation...");
+        ProgressDialog progress = showProgressDialog("Importing Portfolio",
+                "Reading and processing " + file.getName() + "...");
+        progress.show();
+        applyDefaultSort = true;
+        runAsync(() -> api.importPortfolio(file), msg -> {
+            progress.close();
+            setStatus(msg);
+            refreshAll();
+            loadCorrelationPositions();
+        }, progress);
+    }
+
+    private void loadCorrelationPositions() {
+        runAsync(() -> api.getPositions(), positionsList -> {
+            corrSymbols.clear();
+            corrNames.clear();
+            for (PositionData p : positionsList) {
+                if (p.isCash()) continue;
+                if (p.getTotalQuantity() <= 0) continue;
+                corrSymbols.add(p.getSymbol());
+                corrNames.add(p.getName());
+            }
+            lastCorrelation = null;
+            buildCorrPositionColumns();
+            corrInfoLabel.setText("Portfolio loaded \u2014 " + corrSymbols.size()
+                    + " symbols. Click Run Correlation to compute the matrix.");
+        });
+    }
+
+    @SuppressWarnings("unchecked")
+    private void buildCorrPositionColumns() {
+        corrTable.getColumns().clear();
+        corrTable.getItems().clear();
+
+        TableColumn<CorrelationRow, String> symCol = new TableColumn<>("Symbol");
+        symCol.setCellValueFactory(new PropertyValueFactory<>("symbol"));
+        symCol.setPrefWidth(80);
+
+        TableColumn<CorrelationRow, String> nameCol = new TableColumn<>("Name");
+        nameCol.setCellValueFactory(new PropertyValueFactory<>("name"));
+        nameCol.setPrefWidth(150);
+
+        corrTable.getColumns().addAll(symCol, nameCol);
+
+        ObservableList<CorrelationRow> items = FXCollections.observableArrayList();
+        for (int i = 0; i < corrSymbols.size(); i++) {
+            CorrelationRow row = new CorrelationRow();
+            row.setSymbol(corrSymbols.get(i));
+            row.setName(corrNames.get(i));
+            items.add(row);
+        }
+        corrTable.getItems().setAll(items);
+    }
+
+    private void runCorrelation() {
+        if (corrSymbols.size() < 2) {
+            showError("Error", "Import a portfolio with at least 2 non-cash positions first.");
+            return;
+        }
+        String lookback = corrLookbackCombo.getValue();
+        String periodicity = corrPeriodicityCombo.getValue().toLowerCase();
+
+        setStatus("Computing correlation matrix (" + lookback + " / " + periodicity + ")...");
+        corrInfoLabel.setText("Fetching historical data and computing correlations...");
+
+        runAsync(
+            () -> api.calculateCorrelation(
+                    new ArrayList<>(corrSymbols), new ArrayList<>(corrNames),
+                    lookback, periodicity),
+            response -> {
+                lastCorrelation = response;
+                buildCorrMatrixColumns(response);
+                corrTable.getItems().setAll(response.getRows());
+                corrInfoLabel.setText(String.format(
+                        "Correlation Matrix  |  %d symbols  |  Lookback: %s  |  Periodicity: %s",
+                        response.getSymbols().size(), lookback,
+                        corrPeriodicityCombo.getValue()));
+                setStatus("Correlation matrix computed for " + response.getSymbols().size() + " symbols");
+            }
+        );
+    }
+
+    @SuppressWarnings("unchecked")
+    private void buildCorrMatrixColumns(CorrelationResponse response) {
+        corrTable.getColumns().clear();
+
+        String selfStyle = "-fx-alignment: CENTER-RIGHT; -fx-background-color: #f0f0f0;";
+        String normalStyle = "-fx-alignment: CENTER-RIGHT;";
+
+        // Avg Correlation column
+        TableColumn<CorrelationRow, String> avgCol = new TableColumn<>("Avg Corr");
+        avgCol.setCellValueFactory(cd -> {
+            Double avg = cd.getValue().getAvgCorrelation();
+            return new SimpleStringProperty(avg != null ? String.format("%.2f", avg) : "");
+        });
+        avgCol.setPrefWidth(80);
+        avgCol.setStyle("-fx-alignment: CENTER-RIGHT; -fx-font-weight: bold;");
+
+        // Symbol column (row header)
+        TableColumn<CorrelationRow, String> symCol = new TableColumn<>("Symbol");
+        symCol.setCellValueFactory(new PropertyValueFactory<>("symbol"));
+        symCol.setPrefWidth(80);
+
+        corrTable.getColumns().addAll(avgCol, symCol);
+
+        // One column per symbol
+        List<String> symbols = response.getSymbols();
+        for (int j = 0; j < symbols.size(); j++) {
+            final int colIdx = j;
+            TableColumn<CorrelationRow, String> col = new TableColumn<>(symbols.get(j));
+            col.setCellValueFactory(cd -> {
+                List<Double> corrs = cd.getValue().getCorrelations();
+                if (corrs == null || colIdx >= corrs.size()) return new SimpleStringProperty("");
+                Double val = corrs.get(colIdx);
+                if (val == null) return new SimpleStringProperty("");
+                return new SimpleStringProperty(String.format("%.2f", val));
+            });
+            col.setCellFactory(c -> new TableCell<>() {
                 @Override
                 protected void updateItem(String item, boolean empty) {
                     super.updateItem(item, empty);
                     if (empty || item == null || item.isEmpty()) {
                         setText(null);
-                        setStyle("-fx-alignment: CENTER-RIGHT;");
+                        // Check if this is a self-correlation cell (diagonal)
+                        int rowIdx = getIndex();
+                        if (rowIdx >= 0 && rowIdx < symbols.size()
+                                && symbols.get(rowIdx).equals(symbols.get(colIdx))) {
+                            setStyle(selfStyle);
+                        } else {
+                            setStyle(normalStyle);
+                        }
                         return;
                     }
                     setText(item);
-                    if (lastSchedule != null && "redemption".equals(lastSchedule.getDirection())) {
-                        setStyle("-fx-alignment: CENTER-RIGHT; -fx-background-color: #ffc7ce;");
-                    } else {
-                        setStyle("-fx-alignment: CENTER-RIGHT; -fx-background-color: #c6efce;");
-                    }
+                    setStyle(normalStyle);
                 }
             });
-            scheduleTable.getColumns().add(weekCol);
+            col.setPrefWidth(65);
+            corrTable.getColumns().add(col);
         }
+    }
+
+    private void showAddCandidateDialog() {
+        Dialog<String[]> dialog = new Dialog<>();
+        dialog.setTitle("Add Candidate");
+        dialog.setResizable(true);
+
+        ButtonType addBtn = new ButtonType("Add", ButtonBar.ButtonData.OK_DONE);
+        dialog.getDialogPane().getButtonTypes().addAll(addBtn, ButtonType.CANCEL);
+
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(10);
+        grid.setPadding(new Insets(20));
+
+        TextField tickerField = new TextField();
+        tickerField.setPromptText("e.g. 6758");
+        TextField nameField = new TextField();
+        nameField.setPromptText("e.g. Sony Group Corp");
+
+        grid.add(new Label("Ticker:"), 0, 0);
+        grid.add(tickerField, 1, 0);
+        grid.add(new Label("Name:"), 0, 1);
+        grid.add(nameField, 1, 1);
+
+        dialog.getDialogPane().setContent(grid);
+        dialog.getDialogPane().setPrefWidth(350);
+
+        dialog.setResultConverter(btn -> {
+            if (btn == addBtn) {
+                String ticker = tickerField.getText().trim();
+                String name = nameField.getText().trim();
+                if (!ticker.isEmpty() && !name.isEmpty()) {
+                    return new String[]{ticker, name};
+                }
+            }
+            return null;
+        });
+
+        dialog.showAndWait().ifPresent(result -> {
+            if (result == null) {
+                showError("Error", "Both ticker and name are required.");
+                return;
+            }
+            // Add to the lists and auto-run
+            corrSymbols.add(result[0]);
+            corrNames.add(result[1]);
+            runCorrelation();
+        });
     }
 
     private void openSubRedDialog(String direction) {
@@ -944,7 +1311,10 @@ public class MainWindow {
                             dirLabel, response.getAmountUsd() / 1e6, modeLabel, response.getTotalWeeks()));
 
                     buildScheduleColumns(response.getTotalWeeks());
-                    scheduleTable.getItems().setAll(response.getItems());
+                    List<ScheduleItem> tableItems = new ArrayList<>();
+                    tableItems.addAll(buildSummaryRows(response));
+                    tableItems.addAll(response.getItems());
+                    scheduleTable.getItems().setAll(tableItems);
                     setStatus("Schedule computed: " + response.getItems().size() + " positions, "
                             + response.getTotalWeeks() + " weeks");
                 }
