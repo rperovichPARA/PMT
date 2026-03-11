@@ -1847,7 +1847,7 @@ class ScheduleResponse(BaseModel):
 @app.post("/api/subscription-redemption/calculate", response_model=ScheduleResponse)
 def calculate_schedule(req: ScheduleRequest):
     """Compute a weekly trading schedule for a subscription or redemption."""
-    from portfolio_tool.sub_red_tab import compute_schedule
+    from portfolio_tool.schedule import compute_schedule
 
     portfolio = _state["portfolio"]
     fund_names = _state["fund_names"]
