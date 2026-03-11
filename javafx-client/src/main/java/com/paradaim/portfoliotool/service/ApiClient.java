@@ -270,6 +270,29 @@ public class ApiClient {
         }
     }
 
+    // -- Subscription / Redemption --------------------------------------------
+
+    public ScheduleResponse calculateSchedule(double amountUsdMm, String mode, String direction) throws IOException {
+        var payload = mapper.createObjectNode();
+        payload.put("amount_usd_mm", amountUsdMm);
+        payload.put("mode", mode);
+        payload.put("direction", direction);
+
+        Request req = new Request.Builder()
+                .url(baseUrl + "/api/subscription-redemption/calculate")
+                .post(RequestBody.create(payload.toString(), MediaType.parse("application/json")))
+                .build();
+
+        try (Response resp = http.newCall(req).execute()) {
+            String body = resp.body().string();
+            if (!resp.isSuccessful()) {
+                JsonNode node = mapper.readTree(body);
+                throw new IOException(node.has("detail") ? node.get("detail").asText() : "Schedule calculation failed");
+            }
+            return mapper.readValue(body, ScheduleResponse.class);
+        }
+    }
+
     // -- Generic helpers ------------------------------------------------------
 
     private <T> T get(String path, Class<T> type) throws IOException {
