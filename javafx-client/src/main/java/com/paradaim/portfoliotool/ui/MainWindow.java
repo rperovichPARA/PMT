@@ -771,23 +771,7 @@ public class MainWindow {
     }
 
     private void importPortfolioForSubRed() {
-        FileChooser fc = new FileChooser();
-        fc.setTitle("Import Portfolio");
-        fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("Excel Files", "*.xlsx", "*.xls"));
-        File file = fc.showOpenDialog(stage);
-        if (file == null) return;
-
-        setStatus("Importing portfolio...");
-        ProgressDialog progress = showProgressDialog("Importing Portfolio",
-                "Reading and processing " + file.getName() + "...");
-        progress.show();
-        applyDefaultSort = true;
-        runAsync(() -> api.importPortfolio(file), msg -> {
-            progress.close();
-            setStatus(msg);
-            refreshAll();
-            refreshSubRedPositions();
-        }, progress);
+        importPortfolio();
     }
 
     private void refreshSubRedPositions() {
@@ -1044,23 +1028,7 @@ public class MainWindow {
     }
 
     private void importPortfolioForCorrelation() {
-        FileChooser fc = new FileChooser();
-        fc.setTitle("Import Portfolio");
-        fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("Excel Files", "*.xlsx", "*.xls"));
-        File file = fc.showOpenDialog(stage);
-        if (file == null) return;
-
-        setStatus("Importing portfolio for correlation...");
-        ProgressDialog progress = showProgressDialog("Importing Portfolio",
-                "Reading and processing " + file.getName() + "...");
-        progress.show();
-        applyDefaultSort = true;
-        runAsync(() -> api.importPortfolio(file), msg -> {
-            progress.close();
-            setStatus(msg);
-            refreshAll();
-            loadCorrelationPositions();
-        }, progress);
+        importPortfolio();
     }
 
     private void loadCorrelationPositions() {
@@ -1465,6 +1433,15 @@ public class MainWindow {
         });
     }
 
+    /**
+     * Refresh all tabs after a portfolio import — Current Portfolio, Sub/Red, and Correlation.
+     */
+    private void refreshAllTabs() {
+        refreshAll();
+        refreshSubRedPositions();
+        loadCorrelationPositions();
+    }
+
     private void refreshAll() {
         setStatus("Refreshing data...");
         runAsync(() -> {
@@ -1572,7 +1549,7 @@ public class MainWindow {
         runAsync(() -> api.importPortfolio(file), msg -> {
             progress.close();
             setStatus(msg);
-            refreshAll();
+            refreshAllTabs();
         }, progress);
     }
 
