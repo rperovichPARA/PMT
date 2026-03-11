@@ -1884,6 +1884,7 @@ def calculate_schedule(req: ScheduleRequest):
         ScheduleItem(
             symbol=r["symbol"],
             name=r["name"],
+            total_quantity=r["total_quantity"],
             current_value_usd=r["current_value_usd"],
             target_change_usd=r["target_change_usd"],
             trading_days=r["trading_days"],
