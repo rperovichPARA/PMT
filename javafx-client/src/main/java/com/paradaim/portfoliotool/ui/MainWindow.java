@@ -718,12 +718,14 @@ public class MainWindow {
         HBox toolbar = new HBox(8);
         toolbar.setAlignment(Pos.CENTER_LEFT);
 
+        Button importBtn = new Button("Import Portfolio");
+        importBtn.setOnAction(e -> importPortfolioForSubRed());
         Button subBtn = new Button("Create Subscription");
         subBtn.setOnAction(e -> openSubRedDialog("subscription"));
         Button redBtn = new Button("Create Redemption");
         redBtn.setOnAction(e -> openSubRedDialog("redemption"));
 
-        toolbar.getChildren().addAll(subBtn, redBtn);
+        toolbar.getChildren().addAll(importBtn, subBtn, redBtn);
 
         // Info label
         scheduleInfoLabel = new Label("Import a portfolio and click Create Subscription or Create Redemption to generate a schedule.");
@@ -731,11 +733,76 @@ public class MainWindow {
 
         // Schedule table
         scheduleTable = new TableView<>();
-        scheduleTable.setPlaceholder(new Label("No schedule computed yet"));
+        scheduleTable.setPlaceholder(new Label("Import a portfolio to begin"));
         VBox.setVgrow(scheduleTable, Priority.ALWAYS);
 
         tab.getChildren().addAll(toolbar, scheduleInfoLabel, scheduleTable);
         return tab;
+    }
+
+    private void importPortfolioForSubRed() {
+        FileChooser fc = new FileChooser();
+        fc.setTitle("Import Portfolio");
+        fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("Excel Files", "*.xlsx", "*.xls"));
+        File file = fc.showOpenDialog(stage);
+        if (file == null) return;
+
+        setStatus("Importing portfolio...");
+        ProgressDialog progress = showProgressDialog("Importing Portfolio",
+                "Reading and processing " + file.getName() + "...");
+        progress.show();
+        applyDefaultSort = true;
+        runAsync(() -> api.importPortfolio(file), msg -> {
+            progress.close();
+            setStatus(msg);
+            refreshAll();
+            refreshSubRedPositions();
+        }, progress);
+    }
+
+    private void refreshSubRedPositions() {
+        runAsync(() -> api.getPositions(), positionsList -> {
+            buildPositionColumns();
+            ObservableList<ScheduleItem> items = FXCollections.observableArrayList();
+            for (PositionData p : positionsList) {
+                if (p.isCash()) continue;
+                if (p.getTotalQuantity() <= 0) continue;
+                ScheduleItem si = new ScheduleItem();
+                si.setSymbol(p.getSymbol());
+                si.setName(p.getName());
+                si.setTotalQuantity(p.getTotalQuantity());
+                si.setTradingDays(0);
+                si.setWeeks(new ArrayList<>());
+                items.add(si);
+            }
+            scheduleTable.getItems().setAll(items);
+            lastSchedule = null;
+            scheduleInfoLabel.setText("Portfolio loaded — " + items.size()
+                    + " positions. Click Create Subscription or Create Redemption to generate a schedule.");
+        });
+    }
+
+    @SuppressWarnings("unchecked")
+    private void buildPositionColumns() {
+        scheduleTable.getColumns().clear();
+
+        TableColumn<ScheduleItem, String> symCol = new TableColumn<>("Symbol");
+        symCol.setCellValueFactory(new PropertyValueFactory<>("symbol"));
+        symCol.setPrefWidth(80);
+
+        TableColumn<ScheduleItem, String> nameCol = new TableColumn<>("Name");
+        nameCol.setCellValueFactory(new PropertyValueFactory<>("name"));
+        nameCol.setPrefWidth(150);
+
+        TableColumn<ScheduleItem, String> qtyCol = new TableColumn<>("Quantity");
+        qtyCol.setCellValueFactory(cd -> {
+            double qty = cd.getValue().getTotalQuantity();
+            return new SimpleStringProperty(formatNumber(qty));
+        });
+        qtyCol.setPrefWidth(100);
+        qtyCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+
+        scheduleTable.getColumns().addAll(symCol, nameCol, qtyCol);
     }
 
     @SuppressWarnings("unchecked")
@@ -750,6 +817,14 @@ public class MainWindow {
         nameCol.setCellValueFactory(new PropertyValueFactory<>("name"));
         nameCol.setPrefWidth(150);
 
+        TableColumn<ScheduleItem, String> qtyCol = new TableColumn<>("Quantity");
+        qtyCol.setCellValueFactory(cd -> {
+            double qty = cd.getValue().getTotalQuantity();
+            return new SimpleStringProperty(formatNumber(qty));
+        });
+        qtyCol.setPrefWidth(100);
+        qtyCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+
         TableColumn<ScheduleItem, String> daysCol = new TableColumn<>("Trading Days");
         daysCol.setCellValueFactory(cd -> {
             double td = cd.getValue().getTradingDays();
@@ -758,7 +833,7 @@ public class MainWindow {
         daysCol.setPrefWidth(90);
         daysCol.setStyle("-fx-alignment: CENTER-RIGHT;");
 
-        scheduleTable.getColumns().addAll(symCol, nameCol, daysCol);
+        scheduleTable.getColumns().addAll(symCol, nameCol, qtyCol, daysCol);
 
         for (int w = 0; w < totalWeeks; w++) {
             final int weekIdx = w;
