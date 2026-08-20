@@ -4,8 +4,6 @@ echo  PMT Launcher
 echo ========================================
 cd /d C:\Users\rpero\PMT
 
-git config user.email "rperovich@gmail.com"
-git config user.name "rperovichPARA"
 
 echo Updating from remote...
 git stash
